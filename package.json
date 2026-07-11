@@ -1,0 +1,31 @@
+{
+  "name": "@sdi/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Search Discovery Infrastructure for static Astro sites.",
+  "bin": {
+    "sdi": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint src tests",
+    "check": "npm run build && npm run lint && npm run test"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^3.0.0"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "sbi-canonical",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Canonical Search Build Indexer (SBI) consolidated from existing SDI project variants.",
+  "bin": {
+    "sbi": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "dev": "tsx src/cli.ts run",
+    "start": "node dist/cli.js run"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}
