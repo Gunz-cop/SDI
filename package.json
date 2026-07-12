@@ -13,9 +13,10 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "typecheck:contracts": "tsc -p tsconfig.contracts.json",
     "test": "vitest run",
     "lint": "eslint src tests",
-    "check": "npm run build && npm run lint && npm run test"
+    "check": "npm run build && npm run typecheck:contracts && npm run lint && npm run test"
   },
   "engines": {
     "node": ">=22.12.0"

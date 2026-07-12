@@ -10,3 +10,4 @@ Este registro cronológico resume decisiones relevantes. No reemplaza a los ADR:
 | 2026-07-10 | HouseGatitos será el proyecto piloto. | Es la base conductual incremental más madura y ejecuta discovery después del deploy. |
 | 2026-07-10 | Se acepta OneDrive para el estado local con escritura atómica, backup y retry. | Es suficiente para 0.1; la persistencia remota se evalúa solo ante un caso real de runner efímero. |
 | 2026-07-10 | Se recomienda migrar gradualmente los repositorios a `C:\Dev` fuera de OneDrive. | La recomendación no bloquea el desarrollo actual de SDI. |
+| 2026-07-12 | `PublishResult` distingue fallos de transporte de respuestas HTTP. | `BatchPublishResult` usa una unión discriminada: un status HTTP es numérico y no admite `failure`; sin respuesta HTTP, `status` es `null` y exige `failure` (`timeout`, `network` o `aborted`). Véase ADR-0001. |

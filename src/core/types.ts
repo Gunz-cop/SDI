@@ -47,12 +47,26 @@ export interface Destination {
   publish(changes: ChangeSet): Promise<PublishResult>;
 }
 
+/** Transport failures have no HTTP response and therefore no HTTP status. */
+export type TransportFailureKind = "timeout" | "network" | "aborted";
+
+/** Result of one IndexNow batch after all of its attempts have completed. */
+export type BatchPublishResult =
+  | {
+      size: number;
+      attempts: number;
+      status: number;
+      failure?: never;
+    }
+  | {
+      size: number;
+      attempts: number;
+      status: null;
+      failure: TransportFailureKind;
+    };
+
 export interface PublishResult {
   accepted: boolean;
   submittedUrls: number;
-  batches: Array<{
-    size: number;
-    status: number;
-    attempts: number;
-  }>;
+  batches: BatchPublishResult[];
 }

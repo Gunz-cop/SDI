@@ -359,14 +359,29 @@ export interface Destination {
   publish(changes: ChangeSet): Promise<PublishResult>;
 }
 
+export type TransportFailureKind =
+  | "timeout"
+  | "network"
+  | "aborted";
+
+export type BatchPublishResult =
+  | {
+      size: number;
+      attempts: number;
+      status: number;
+      failure?: never;
+    }
+  | {
+      size: number;
+      attempts: number;
+      status: null;
+      failure: TransportFailureKind;
+    };
+
 export interface PublishResult {
   accepted: boolean;
   submittedUrls: number;
-  batches: Array<{
-    size: number;
-    status: number;
-    attempts: number;
-  }>;
+  batches: BatchPublishResult[];
 }
 ```
 
@@ -536,6 +551,7 @@ Un run live es exitoso cuando discovery/fingerprint terminan, todos los cambios 
 - Respetar `Retry-After` cuando exista; si no, backoff exponencial con jitter.
 - No retry automático: 400, 403 y 422.
 - IndexNow 200 y 202 cuentan como aceptados.
+- Cada resultado de batch distingue respuesta HTTP de fallo de transporte: `status` numérico solo existe cuando hubo respuesta HTTP; `status: null` exige `failure: "timeout"|"network"|"aborted"`. `attempts` cuenta los intentos totales del batch, `submittedUrls` cuenta URLs de batches intentados al menos una vez y los batches omitidos por fail-fast no se reportan.
 
 ### Semántica de entrega
 
