@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { copyFile, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
-import { dirname } from "node:path";
+import { hostname as currentHostname } from "node:os";
+import { dirname, join } from "node:path";
 import { FINGERPRINT_PROFILE } from "../core/fingerprint.js";
 import { normalizeUrl, UrlNormalizationError } from "../core/normalize.js";
 import type { DiscoveryState, StateStore, TrailingSlashPolicy, UrlRecord } from "../core/types.js";
@@ -35,6 +36,165 @@ export class FileStateError extends Error {
   ) {
     super(message, options);
     this.name = "FileStateError";
+  }
+}
+
+const STALE_LOCK_MS = 30 * 60 * 1000;
+
+interface StateLockFilesystem {
+  readFile(path: string, encoding: "utf8"): Promise<string>;
+}
+
+export interface StateLockOptions {
+  lockPath: string;
+  siteId: string;
+  now?: () => Date;
+  hostname?: () => string;
+  pidIsRunning?: (pid: number) => Promise<boolean | undefined>;
+  filesystem?: Partial<StateLockFilesystem>;
+}
+
+export interface StateLockMetadata {
+  pid: number;
+  startedAt: string;
+  siteId: string;
+  hostname: string;
+}
+
+export type StateLockInspection =
+  | { kind: "missing"; lockPath: string }
+  | { kind: "invalid"; lockPath: string; contents?: string }
+  | { kind: "active"; lockPath: string; contents: string; metadata: StateLockMetadata }
+  | { kind: "stale"; lockPath: string; contents: string; metadata: StateLockMetadata };
+
+export type StateLockErrorCode = "lock-active" | "lock-stale" | "lock-invalid" | "lock-owner-lost" | "lock-remove-failed";
+
+export class StateLockError extends Error {
+  constructor(
+    public readonly code: StateLockErrorCode,
+    message: string,
+    public readonly inspection?: StateLockInspection,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "StateLockError";
+  }
+}
+
+export interface StateLockLease {
+  inspection: Extract<StateLockInspection, { kind: "active" }>;
+  release(): Promise<void>;
+}
+
+/** Returns the per-state lock path reserved for a future run orchestrator. */
+export function getStateLockPath(statePath: string): string {
+  return join(dirname(statePath), "run.lock");
+}
+
+/** Acquires a lock exclusively; existing locks are only inspected and reported, never removed. */
+export async function acquireStateLock(options: StateLockOptions): Promise<StateLockLease> {
+  const metadata: StateLockMetadata = {
+    pid: process.pid,
+    startedAt: nowFor(options).toISOString(),
+    siteId: options.siteId,
+    hostname: hostnameFor(options),
+  };
+  const contents = serializeLock(metadata);
+
+  await mkdir(dirname(options.lockPath), { recursive: true });
+
+  let handle;
+
+  try {
+    handle = await open(options.lockPath, "wx");
+  } catch (error: unknown) {
+    if (!isFileAlreadyExists(error)) {
+      throw error;
+    }
+
+    const inspection = await inspectStateLock(options);
+    const code = inspection.kind === "stale" ? "lock-stale" : inspection.kind === "invalid" ? "lock-invalid" : "lock-active";
+    throw new StateLockError(code, `State lock already exists: ${options.lockPath}`, inspection, { cause: error });
+  }
+
+  try {
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+  } catch (error: unknown) {
+    await removeTempBestEffort(options.lockPath);
+    throw error;
+  } finally {
+    await handle.close();
+  }
+
+  const inspection: Extract<StateLockInspection, { kind: "active" }> = {
+    kind: "active",
+    lockPath: options.lockPath,
+    contents,
+    metadata,
+  };
+
+  return {
+    inspection,
+    release: () => releaseStateLock(inspection, options),
+  };
+}
+
+/** Inspects a lock without changing it. A malformed or unreadable lock is always invalid, never stale. */
+export async function inspectStateLock(options: StateLockOptions): Promise<StateLockInspection> {
+  let contents: string;
+
+  try {
+    contents = await readLockFile(options);
+  } catch (error: unknown) {
+    if (isMissingFile(error)) {
+      return { kind: "missing", lockPath: options.lockPath };
+    }
+
+    return { kind: "invalid", lockPath: options.lockPath };
+  }
+
+  const metadata = parseLockMetadata(contents);
+
+  if (metadata === null) {
+    return { kind: "invalid", lockPath: options.lockPath, contents };
+  }
+
+  const stale = await isStaleLock(metadata, options);
+  return stale
+    ? { kind: "stale", lockPath: options.lockPath, contents, metadata }
+    : { kind: "active", lockPath: options.lockPath, contents, metadata };
+}
+
+/** Removes only the exact stale lock previously inspected by the caller. */
+export async function removeStaleLock(inspection: StateLockInspection, options: StateLockOptions): Promise<boolean> {
+  if (inspection.kind !== "stale") {
+    return false;
+  }
+
+  let currentContents: string;
+
+  try {
+    currentContents = await readLockFile(options);
+  } catch {
+    return false;
+  }
+
+  if (currentContents !== inspection.contents) {
+    return false;
+  }
+
+  try {
+    await rm(inspection.lockPath);
+    return true;
+  } catch (error: unknown) {
+    if (isMissingFile(error)) {
+      return false;
+    }
+
+    throw new StateLockError("lock-remove-failed", `Could not remove stale lock: ${inspection.lockPath}`, inspection, {
+      cause: error,
+    });
   }
 }
 
@@ -407,6 +567,10 @@ function isTrailingSlashPolicy(value: unknown): value is TrailingSlashPolicy {
 }
 
 function isIsoTimestamp(value: unknown): value is string {
+  return isCanonicalIsoTimestamp(value);
+}
+
+function isCanonicalIsoTimestamp(value: unknown): value is string {
   if (!isNonEmptyString(value)) {
     return false;
   }
@@ -442,6 +606,110 @@ async function writeAndFlush(path: string, contents: string): Promise<void> {
   }
 }
 
+async function releaseStateLock(
+  inspection: Extract<StateLockInspection, { kind: "active" }>,
+  options: StateLockOptions,
+): Promise<void> {
+  let currentContents: string;
+
+  try {
+    currentContents = await readLockFile(options);
+  } catch (error: unknown) {
+    if (isMissingFile(error)) {
+      return;
+    }
+
+    throw error;
+  }
+
+  if (currentContents !== inspection.contents) {
+    throw new StateLockError("lock-owner-lost", `State lock ownership changed: ${inspection.lockPath}`, inspection);
+  }
+
+  await rm(inspection.lockPath);
+}
+
+async function readLockFile(options: StateLockOptions): Promise<string> {
+  return options.filesystem?.readFile?.(options.lockPath, "utf8") ?? readFile(options.lockPath, "utf8");
+}
+
+function parseLockMetadata(contents: string): StateLockMetadata | null {
+  let value: unknown;
+
+  try {
+    value = JSON.parse(contents) as unknown;
+  } catch {
+    return null;
+  }
+
+  if (!isRecord(value) || !hasOnlyKeys(value, ["pid", "startedAt", "siteId", "hostname"])) {
+    return null;
+  }
+
+  if (
+    typeof value.pid !== "number" ||
+    !Number.isInteger(value.pid) ||
+    value.pid <= 0 ||
+    !isCanonicalIsoTimestamp(value.startedAt) ||
+    !isNonEmptyString(value.siteId) ||
+    !isNonEmptyString(value.hostname)
+  ) {
+    return null;
+  }
+
+  return {
+    pid: value.pid,
+    startedAt: value.startedAt,
+    siteId: value.siteId,
+    hostname: value.hostname,
+  };
+}
+
+async function isStaleLock(metadata: StateLockMetadata, options: StateLockOptions): Promise<boolean> {
+  if (metadata.hostname === hostnameFor(options)) {
+    const running = await pidIsRunningFor(options, metadata.pid);
+
+    if (running !== undefined) {
+      return !running;
+    }
+  }
+
+  return nowFor(options).getTime() - Date.parse(metadata.startedAt) >= STALE_LOCK_MS;
+}
+
+async function pidIsRunningFor(options: StateLockOptions, pid: number): Promise<boolean | undefined> {
+  if (options.pidIsRunning !== undefined) {
+    return options.pidIsRunning(pid);
+  }
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    if (isErrnoCode(error, "ESRCH")) {
+      return false;
+    }
+
+    if (isErrnoCode(error, "EPERM")) {
+      return true;
+    }
+
+    return undefined;
+  }
+}
+
+function nowFor(options: StateLockOptions): Date {
+  return (options.now ?? (() => new Date()))();
+}
+
+function hostnameFor(options: StateLockOptions): string {
+  return (options.hostname ?? currentHostname)();
+}
+
+function serializeLock(metadata: StateLockMetadata): string {
+  return `${JSON.stringify(metadata, null, 2)}\n`;
+}
+
 async function removeTempBestEffort(path: string): Promise<void> {
   try {
     await rm(path, { force: true });
@@ -469,6 +737,10 @@ function isMissingFile(error: unknown): error is NodeJS.ErrnoException {
 
 function isFileAlreadyExists(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
+}
+
+function isErrnoCode(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
 function isCorruptState(error: unknown): error is FileStateError {
