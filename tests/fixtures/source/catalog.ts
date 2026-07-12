@@ -21,6 +21,7 @@ export interface SourceFixture {
   siteUrl: string;
   sitemap: "present" | "missing" | "invalid";
   fallbackToHtmlScan: boolean;
+  trailingSlash?: "preserve" | "always" | "never";
   outcome: ExpectedOutcome;
 }
 
@@ -30,6 +31,7 @@ export const sourceFixtures: SourceFixture[] = [
     siteUrl: "https://file.example.test",
     sitemap: "present",
     fallbackToHtmlScan: true,
+    trailingSlash: "preserve",
     outcome: {
       kind: "success",
       resources: [
@@ -55,6 +57,7 @@ export const sourceFixtures: SourceFixture[] = [
     siteUrl: "https://directory.example.test",
     sitemap: "present",
     fallbackToHtmlScan: true,
+    trailingSlash: "preserve",
     outcome: {
       kind: "success",
       resources: [
@@ -78,6 +81,7 @@ export const sourceFixtures: SourceFixture[] = [
     siteUrl: "https://fallback.example.test",
     sitemap: "missing",
     fallbackToHtmlScan: true,
+    trailingSlash: "preserve",
     outcome: {
       kind: "success",
       resources: [
@@ -132,6 +136,7 @@ export const sourceFixtures: SourceFixture[] = [
     siteUrl: "https://duplicates.example.test",
     sitemap: "present",
     fallbackToHtmlScan: false,
+    trailingSlash: "preserve",
     outcome: {
       kind: "success",
       resources: [
@@ -169,6 +174,7 @@ export const sourceFixtures: SourceFixture[] = [
     siteUrl: "https://housegatitos.example",
     sitemap: "present",
     fallbackToHtmlScan: false,
+    trailingSlash: "always",
     outcome: {
       kind: "success",
       resources: [
@@ -192,6 +198,7 @@ export const sourceFixtures: SourceFixture[] = [
     siteUrl: "https://cuidadelperroviejo.example",
     sitemap: "present",
     fallbackToHtmlScan: false,
+    trailingSlash: "never",
     outcome: {
       kind: "success",
       resources: [
