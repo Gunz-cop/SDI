@@ -1,4 +1,4 @@
-import { access, copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -144,6 +144,51 @@ describe("FileStateStore.load", () => {
   });
 
   it.each([
+    ["an unknown top-level property", (state: Record<string, unknown>) => {
+      state.revision = 2;
+    }],
+    ["an unknown UrlRecord property", (state: Record<string, unknown>) => {
+      const resources = state.resources as Record<string, Record<string, unknown>>;
+      resources["https://state.example.test/about"].metadata = "unexpected";
+    }],
+    ["a non-canonical updatedAt timestamp", (state: Record<string, unknown>) => {
+      state.updatedAt = "2026-07-12T00:00:00Z";
+    }],
+  ] as const)("rejects schema v1 with %s", async (_description, mutate) => {
+    const directory = await temporaryDirectory();
+    const statePath = resolve(directory, "state.json");
+    const state = await readJsonFixture("state-v1-valid.json");
+    mutate(state);
+    await writeFile(statePath, JSON.stringify(state));
+
+    await expect(
+      stateStore(statePath, {
+        siteId: "state-site",
+        siteUrl: "https://state.example.test",
+        trailingSlash: "preserve",
+      }).load(),
+    ).rejects.toMatchObject({ code: "state-corrupt" } satisfies Partial<FileStateError>);
+  });
+
+  it("rejects a legacy record with an unknown property", async () => {
+    const directory = await temporaryDirectory();
+    const legacyPath = resolve(directory, "legacy.json");
+    const legacy = await readJsonFixture("legacy-valid.json");
+    const record = legacy["https://legacy.example.test/articles/"] as Record<string, unknown>;
+    record.metadata = "unexpected";
+    await writeFile(legacyPath, JSON.stringify(legacy));
+
+    await expect(
+      stateStore(resolve(directory, "state.json"), {
+        siteId: "legacy-site",
+        siteUrl: "https://legacy.example.test",
+        trailingSlash: "never",
+        legacyStatePath: legacyPath,
+      }).load(),
+    ).rejects.toMatchObject({ code: "legacy-invalid" } satisfies Partial<FileStateError>);
+  });
+
+  it.each([
     ["legacy-key-mismatch.json", "legacy-invalid"],
     ["legacy-collision.json", "legacy-collision"],
     ["state-v1-valid.json", "legacy-invalid"],
@@ -185,4 +230,8 @@ async function temporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(resolve(tmpdir(), "sdi-state-load-"));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+async function readJsonFixture(name: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(fixturePath(name), "utf8")) as Record<string, unknown>;
 }

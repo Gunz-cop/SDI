@@ -110,6 +110,18 @@ function parseDiscoveryState(value: unknown, path: string): DiscoveryState {
     throw new FileStateError("state-corrupt", `State must be an object: ${path}`);
   }
 
+  if (!hasOnlyKeys(value, [
+    "schemaVersion",
+    "siteId",
+    "siteUrl",
+    "trailingSlash",
+    "fingerprintProfile",
+    "updatedAt",
+    "resources",
+  ])) {
+    throw new FileStateError("state-corrupt", `State has unknown properties: ${path}`);
+  }
+
   if (value.schemaVersion !== 1) {
     throw new FileStateError("state-corrupt", `Unsupported state schema in ${path}.`);
   }
@@ -184,6 +196,10 @@ function importLegacyState(value: unknown, options: FileStateStoreOptions, now: 
 }
 
 function parseLegacyRecord(value: unknown, options: FileStateStoreOptions, key: string): UrlRecord {
+  if (isRecord(value) && !hasOnlyKeys(value, ["url", "hash", "lastmod"])) {
+    throw new FileStateError("legacy-invalid", `Legacy resource has unknown properties: ${key}`);
+  }
+
   if (!isRecord(value) || !isNonEmptyString(value.url) || !isHash(value.hash)) {
     throw new FileStateError("legacy-invalid", `Legacy resource is invalid: ${key}`);
   }
@@ -212,6 +228,10 @@ function parseUrlRecord(
   code: FileStateErrorCode,
   path: string,
 ): UrlRecord {
+  if (isRecord(value) && !hasOnlyKeys(value, ["url", "hash", "lastmod"])) {
+    throw new FileStateError(code, `State resource has unknown properties in ${path}.`);
+  }
+
   if (!isRecord(value) || !isNonEmptyString(value.url) || !isHash(value.hash)) {
     throw new FileStateError(code, `Invalid state resource in ${path}.`);
   }
@@ -287,7 +307,12 @@ function isTrailingSlashPolicy(value: unknown): value is TrailingSlashPolicy {
 }
 
 function isIsoTimestamp(value: unknown): value is string {
-  return isNonEmptyString(value) && !Number.isNaN(Date.parse(value));
+  if (!isNonEmptyString(value)) {
+    return false;
+  }
+
+  const timestamp = new Date(value);
+  return !Number.isNaN(timestamp.getTime()) && timestamp.toISOString() === value;
 }
 
 function isHash(value: unknown): value is string {
@@ -300,6 +325,10 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
 }
 
 function isMissingFile(error: unknown): error is NodeJS.ErrnoException {
