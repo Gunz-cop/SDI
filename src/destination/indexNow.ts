@@ -95,7 +95,7 @@ export class IndexNowDestination implements Destination {
   }
 
   private async sendAttempt(urlList: string[]): Promise<AttemptOutcome> {
-    if (this.options.signal?.aborted === true) {
+    if (isAborted(this.options.signal)) {
       return { kind: "transport", failure: "aborted" };
     }
 
@@ -107,7 +107,7 @@ export class IndexNowDestination implements Destination {
     };
 
     this.options.signal?.addEventListener("abort", abortForExternalSignal, { once: true });
-    if (this.options.signal?.aborted === true) {
+    if (isAborted(this.options.signal)) {
       abortForExternalSignal();
       this.options.signal?.removeEventListener("abort", abortForExternalSignal);
       return { kind: "transport", failure: "aborted" };
@@ -235,4 +235,8 @@ function parseRetryAfter(value: string | null, now: Date): number | null {
 
 function defaultSleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds));
+}
+
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
 }
