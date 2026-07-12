@@ -298,6 +298,24 @@ describe("IndexNowDestination", () => {
     expect(sleeps).toEqual([2_000, 3_000, 1_500]);
   });
 
+  it("uses Retry-After for a retryable 503 response", async () => {
+    const sleeps: number[] = [];
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(undefined, { status: 503, headers: { "retry-after": "4" } }))
+      .mockResolvedValueOnce(new Response(undefined, { status: 202 }));
+    const destination = new IndexNowDestination({
+      host: "example.com", key: "test-key", fetch, random: () => 0.5,
+      sleep: async (milliseconds) => { sleeps.push(milliseconds); },
+    });
+
+    await expect(destination.publish(changes({ created: [record("https://example.com/page")] }))).resolves.toMatchObject({
+      accepted: true,
+      batches: [{ attempts: 2, status: 202 }],
+    });
+    expect(sleeps).toEqual([4_000]);
+  });
+
   it("retries 5xx responses, then fails fast after an exhausted batch", async () => {
     const { destination, fetch } = retryStatuses([500, 500, 202, 500, 500, 500]);
     const first = changes({ created: [record("https://example.com/first")] });
@@ -354,6 +372,42 @@ describe("IndexNowDestination", () => {
       ],
     });
     expect(batchFetch).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([
+    ["external cancellation first", "aborted"],
+    ["timeout first", "timeout"],
+  ] as const)("preserves the first abort cause when %s", async (order, failure) => {
+    const external = new AbortController();
+    let triggerTimeout: (() => void) | undefined;
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      if (order === "external cancellation first") {
+        external.abort();
+        triggerTimeout?.();
+      } else {
+        triggerTimeout?.();
+        external.abort();
+      }
+      throw new Error("aborted");
+    });
+    const destination = new IndexNowDestination({
+      host: "example.com",
+      key: "test-key",
+      fetch,
+      signal: external.signal,
+      sleep: async () => undefined,
+      setTimeout: (callback) => {
+        triggerTimeout = callback;
+        return 0 as unknown as ReturnType<typeof globalThis.setTimeout>;
+      },
+      clearTimeout: () => undefined,
+    });
+
+    await expect(destination.publish(changes({ created: [record("https://example.com/page")] }))).resolves.toEqual({
+      accepted: false,
+      submittedUrls: 1,
+      batches: [{ size: 1, attempts: 1, status: null, failure }],
+    });
   });
 });
 

@@ -96,10 +96,9 @@ export class IndexNowDestination implements Destination {
 
   private async sendAttempt(urlList: string[]): Promise<AttemptOutcome> {
     const controller = new AbortController();
-    let timedOut = false;
-    let externallyAborted = false;
+    let abortCause: "timeout" | "aborted" | undefined;
     const abortForExternalSignal = () => {
-      externallyAborted = true;
+      abortCause ??= "aborted";
       controller.abort();
     };
 
@@ -110,7 +109,7 @@ export class IndexNowDestination implements Destination {
     }
 
     const timeout = this.setTimeout(() => {
-      timedOut = true;
+      abortCause ??= "timeout";
       controller.abort();
     }, this.timeoutMs);
 
@@ -128,7 +127,7 @@ export class IndexNowDestination implements Destination {
       });
       return { kind: "http", response };
     } catch {
-      return { kind: "transport", failure: timedOut ? "timeout" : externallyAborted ? "aborted" : "network" };
+      return { kind: "transport", failure: abortCause ?? "network" };
     } finally {
       this.clearTimeout(timeout);
       this.options.signal?.removeEventListener("abort", abortForExternalSignal);
@@ -203,16 +202,14 @@ function isAcceptedStatus(status: number): boolean {
 }
 
 function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 425 || status === 429 || status >= 500;
+  return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
 }
 
 function retryDelay(response: Response, attempt: number, now: () => Date, random: () => number): number {
-  if (response.status === 429) {
-    const retryAfter = parseRetryAfter(response.headers.get("retry-after"), now());
+  const retryAfter = parseRetryAfter(response.headers.get("retry-after"), now());
 
-    if (retryAfter !== null) {
-      return retryAfter;
-    }
+  if (retryAfter !== null) {
+    return retryAfter;
   }
 
   return BACKOFF_BASE_MS * 2 ** (attempt - 1) + Math.floor(random() * BACKOFF_BASE_MS);
