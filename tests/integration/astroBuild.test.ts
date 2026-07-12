@@ -2,6 +2,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { normalizeUrl } from "../../src/core/normalize.js";
+import type { UrlRecord } from "../../src/core/types.js";
 import {
   AstroBuildSource,
   AstroBuildSourceError,
@@ -71,6 +73,18 @@ describe("AstroBuildSource", () => {
 });
 
 describe("composeDiscoveredResources", () => {
+  it.each(sourceFixtures.filter(isComposableFixture))(
+    "$name produces deterministic normalized URL records from discovery",
+    async (fixture) => {
+      const records = await composeDiscoveredResources(
+        await sourceFor(fixture.name, fixture.siteUrl, fixture.fallbackToHtmlScan).discover(),
+        { siteUrl: fixture.siteUrl, trailingSlash: fixture.trailingSlash },
+      );
+
+      expect(records).toEqual(expectedComposedRecords(fixture));
+    },
+  );
+
   it("normalizes, fingerprints, and consolidates exact duplicates deterministically", async () => {
     const fixture = sourceFixtures.find((candidate) => candidate.name === "duplicates");
 
@@ -133,4 +147,45 @@ function sourceFor(name: string, siteUrl: string, fallbackToHtmlScan: boolean): 
     sitemapPath: resolve(distDir, "sitemap-0.xml"),
     fallbackToHtmlScan,
   });
+}
+
+function isComposableFixture(
+  fixture: (typeof sourceFixtures)[number],
+): fixture is (typeof sourceFixtures)[number] & {
+  trailingSlash: "preserve" | "always" | "never";
+  outcome: Extract<(typeof sourceFixtures)[number]["outcome"], { kind: "success" }>;
+} {
+  return fixture.outcome.kind === "success" && fixture.trailingSlash !== undefined;
+}
+
+function expectedComposedRecords(
+  fixture: (typeof sourceFixtures)[number] & {
+    trailingSlash: "preserve" | "always" | "never";
+    outcome: Extract<(typeof sourceFixtures)[number]["outcome"], { kind: "success" }>;
+  },
+): UrlRecord[] {
+  const records = new Map<string, UrlRecord>();
+
+  for (const resource of fixture.outcome.resources) {
+    const url = normalizeUrl(resource.url, {
+      siteUrl: fixture.siteUrl,
+      trailingSlash: fixture.trailingSlash,
+    });
+    const record: UrlRecord = {
+      url,
+      hash: resource.hash,
+      ...(resource.lastmod === undefined ? {} : { lastmod: resource.lastmod }),
+    };
+    const previous = records.get(url);
+
+    if (previous !== undefined && previous.hash !== record.hash) {
+      throw new Error(`Fixture ${fixture.name} has an unexpected normalized collision for ${url}.`);
+    }
+
+    if (previous === undefined) {
+      records.set(url, record);
+    }
+  }
+
+  return [...records.values()].sort((left, right) => left.url.localeCompare(right.url));
 }
