@@ -55,7 +55,7 @@ export class FileStateStore implements StateStore {
       return await this.loadStateFile(this.options.statePath);
     } catch (error: unknown) {
       if (isMissingFile(error)) {
-        return this.loadLegacyWhenAvailable();
+        return this.loadBackupWhenPrimaryIsMissing();
       }
 
       if (isCorruptState(error)) {
@@ -85,6 +85,7 @@ export class FileStateStore implements StateStore {
       }
 
       if (stateExisted) {
+        await rm(backupPath, { force: true });
         await this.rename(statePath, backupPath);
         movedPreviousState = true;
       }
@@ -132,6 +133,22 @@ export class FileStateStore implements StateStore {
         `State and backup are unusable: ${this.options.statePath}`,
         { cause: { primaryError, backupError } },
       );
+    }
+  }
+
+  private async loadBackupWhenPrimaryIsMissing(): Promise<DiscoveryState | null> {
+    try {
+      return await this.loadStateFile(`${this.options.statePath}.bak`);
+    } catch (error: unknown) {
+      if (isMissingFile(error)) {
+        return this.loadLegacyWhenAvailable();
+      }
+
+      if (error instanceof FileStateError) {
+        throw error;
+      }
+
+      throw error;
     }
   }
 

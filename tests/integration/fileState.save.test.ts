@@ -37,6 +37,22 @@ describe("FileStateStore.save", () => {
     await expect(stateStore(statePath).load()).resolves.toEqual(next);
   });
 
+  it("replaces an existing .bak during a third consecutive save", async () => {
+    const directory = await temporaryDirectory();
+    const statePath = resolve(directory, "state.json");
+    const store = stateStore(statePath);
+    const first = stateFor({ updatedAt: "2026-07-12T12:00:00.000Z" });
+    const second = stateFor({ updatedAt: "2026-07-12T13:00:00.000Z" });
+    const third = stateFor({ updatedAt: "2026-07-12T14:00:00.000Z" });
+
+    await store.save(first);
+    await store.save(second);
+    await store.save(third);
+
+    await expect(readFile(`${statePath}.bak`, "utf8")).resolves.toBe(serialize(second));
+    await expect(store.load()).resolves.toEqual(third);
+  });
+
   it("backs up legacy only before the first authorized v1 save", async () => {
     const directory = await temporaryDirectory();
     const statePath = resolve(directory, "state.json");
@@ -155,6 +171,7 @@ describe("FileStateStore.save", () => {
     await expect(access(statePath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(`${statePath}.bak`, "utf8")).resolves.toBe(serialize(original));
     await expect(access(`${statePath}.tmp`)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stateStore(statePath).load()).resolves.toEqual(original);
   });
 });
 

@@ -53,7 +53,7 @@ describe("FileStateStore.load", () => {
     ).resolves.toBeNull();
   });
 
-  it("imports legacy state in memory without creating a backup", async () => {
+  it("uses legacy only when schema v1 and .bak are both absent", async () => {
     const directory = await temporaryDirectory();
     const statePath = resolve(directory, "state.json");
     const legacyPath = fixturePath("legacy-valid.json");
@@ -83,6 +83,7 @@ describe("FileStateStore.load", () => {
     });
     await expect(readFile(legacyPath)).resolves.toEqual(legacyBytes);
     await expect(access(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(`${statePath}.bak`)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(access(`${statePath}.legacy.bak`)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -110,6 +111,35 @@ describe("FileStateStore.load", () => {
     }).load();
 
     expect(state?.resources["https://state.example.test/about"]?.lastmod).toBe("2026-07-11");
+  });
+
+  it("recovers a valid .bak when the primary state is absent", async () => {
+    const directory = await temporaryDirectory();
+    const statePath = resolve(directory, "state.json");
+    await copyFile(fixturePath("state-v1-valid.json"), `${statePath}.bak`);
+
+    await expect(
+      stateStore(statePath, {
+        siteId: "state-site",
+        siteUrl: "https://state.example.test",
+        trailingSlash: "preserve",
+      }).load(),
+    ).resolves.toMatchObject({ siteId: "state-site" });
+  });
+
+  it("aborts when the primary state is absent and .bak is corrupt", async () => {
+    const directory = await temporaryDirectory();
+    const statePath = resolve(directory, "state.json");
+    await copyFile(fixturePath("corrupt.json"), `${statePath}.bak`);
+
+    await expect(
+      stateStore(statePath, {
+        siteId: "state-site",
+        siteUrl: "https://state.example.test",
+        trailingSlash: "preserve",
+        legacyStatePath: fixturePath("legacy-valid.json"),
+      }).load(),
+    ).rejects.toMatchObject({ code: "state-corrupt" } satisfies Partial<FileStateError>);
   });
 
   it("aborts when both primary state and backup are corrupt", async () => {
