@@ -54,4 +54,42 @@ describe("compareRecords", () => {
       deleted: [],
     });
   });
+
+  it("orders every ChangeSet collection by URL", () => {
+    const previous = {
+      "https://example.com/deleted-z": record("https://example.com/deleted-z", "deleted-z"),
+      "https://example.com/deleted-a": record("https://example.com/deleted-a", "deleted-a"),
+      "https://example.com/unchanged-z": record("https://example.com/unchanged-z", "same-z"),
+      "https://example.com/unchanged-a": record("https://example.com/unchanged-a", "same-a"),
+      "https://example.com/updated-z": record("https://example.com/updated-z", "before-z"),
+      "https://example.com/updated-a": record("https://example.com/updated-a", "before-a"),
+    };
+    const current = {
+      "https://example.com/created-z": record("https://example.com/created-z", "created-z"),
+      "https://example.com/created-a": record("https://example.com/created-a", "created-a"),
+      "https://example.com/unchanged-z": record("https://example.com/unchanged-z", "same-z"),
+      "https://example.com/unchanged-a": record("https://example.com/unchanged-a", "same-a"),
+      "https://example.com/updated-z": record("https://example.com/updated-z", "after-z"),
+      "https://example.com/updated-a": record("https://example.com/updated-a", "after-a"),
+    };
+
+    const changes = compareRecords(previous, current);
+
+    expect(changes.created.map(({ url }) => url)).toEqual([
+      "https://example.com/created-a",
+      "https://example.com/created-z",
+    ]);
+    expect(changes.updated.map(({ after }) => after.url)).toEqual([
+      "https://example.com/updated-a",
+      "https://example.com/updated-z",
+    ]);
+    expect(changes.unchanged.map(({ url }) => url)).toEqual([
+      "https://example.com/unchanged-a",
+      "https://example.com/unchanged-z",
+    ]);
+    expect(changes.deleted.map(({ url }) => url)).toEqual([
+      "https://example.com/deleted-a",
+      "https://example.com/deleted-z",
+    ]);
+  });
 });
