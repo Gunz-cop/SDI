@@ -107,6 +107,11 @@ export class IndexNowDestination implements Destination {
     };
 
     this.options.signal?.addEventListener("abort", abortForExternalSignal, { once: true });
+    if (this.options.signal?.aborted === true) {
+      abortForExternalSignal();
+      this.options.signal?.removeEventListener("abort", abortForExternalSignal);
+      return { kind: "transport", failure: "aborted" };
+    }
 
     const timeout = this.setTimeout(() => {
       abortCause ??= "timeout";

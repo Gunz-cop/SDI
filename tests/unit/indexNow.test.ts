@@ -434,6 +434,40 @@ describe("IndexNowDestination", () => {
     expect(sleep).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  it("detects an external abort that happens while registering its listener", async () => {
+    let abortedReads = 0;
+    const addEventListener = vi.fn();
+    const removeEventListener = vi.fn();
+    const signal = {
+      get aborted() {
+        abortedReads += 1;
+        return abortedReads >= 2;
+      },
+      addEventListener,
+      removeEventListener,
+    } as unknown as AbortSignal;
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const setTimeout = vi.fn();
+    const destination = new IndexNowDestination({
+      host: "example.com",
+      key: "test-key",
+      fetch,
+      signal,
+      sleep: async () => undefined,
+      setTimeout,
+    });
+
+    await expect(destination.publish(changes({ created: [record("https://example.com/page")] }))).resolves.toEqual({
+      accepted: false,
+      submittedUrls: 1,
+      batches: [{ size: 1, attempts: 1, status: null, failure: "aborted" }],
+    });
+    expect(addEventListener).toHaveBeenCalledTimes(1);
+    expect(removeEventListener).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(setTimeout).not.toHaveBeenCalled();
+  });
 });
 
 function retryStatuses(statuses: number[]) {
