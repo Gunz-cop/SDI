@@ -10,6 +10,8 @@ Se debe actualizar `Unreleased` cuando un cambio aprobado modifica el comportami
 
 ### Added
 
+- Cliente interno de IndexNow que publica URLs creadas, actualizadas y eliminadas en batches de hasta 1.000 URLs.
+- Pruebas del payload JSON de IndexNow, batches y fail-fast HTTP.
 - Contratos principales del core:
   - `UrlRecord`
   - `DiscoveredResource`
