@@ -1,10 +1,12 @@
 import { mkdir, open, rename, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import type { Diagnostic, ExecutionReport, RedactedConfig } from "./types.js";
 
 type Handle = { writeFile(contents: string, encoding: "utf8"): Promise<void>; sync(): Promise<void>; close(): Promise<void> };
 export interface JsonReportWriterOptions {
   reportPath: string;
+  tempName?: () => string;
   filesystem?: Partial<{
     mkdir(path: string, options: { recursive: true }): Promise<unknown>;
     open(path: string, flags: "wx"): Promise<Handle>;
@@ -19,12 +21,15 @@ export class JsonReportWriteError extends Error { constructor(message: string, o
 export async function writeJsonReport(report: ExecutionReport, options: JsonReportWriterOptions): Promise<void> {
   validateExecutionReport(report);
   const serialized = `${JSON.stringify(orderedReport(report), null, 2)}\n`;
-  const tempPath = `${options.reportPath}.tmp`;
+  const tempPath = `${options.reportPath}.${(options.tempName ?? randomUUID)()}.tmp`;
   const fs = options.filesystem;
   try {
     await (fs?.mkdir?.(dirname(options.reportPath), { recursive: true }) ?? mkdir(dirname(options.reportPath), { recursive: true }));
     const handle = await (fs?.open?.(tempPath, "wx") ?? open(tempPath, "wx"));
-    try { await handle.writeFile(serialized, "utf8"); await handle.sync(); } finally { await handle.close(); }
+    let operationError: unknown;
+    try { await handle.writeFile(serialized, "utf8"); await handle.sync(); } catch (error) { operationError = error; }
+    try { await handle.close(); } catch (error) { operationError ??= error; }
+    if (operationError !== undefined) throw operationError;
     await (fs?.rename?.(tempPath, options.reportPath) ?? rename(tempPath, options.reportPath));
   } catch (error) {
     try { await (fs?.rm?.(tempPath, { force: true }) ?? rm(tempPath, { force: true })); } catch { /* preserve the primary failure */ }
@@ -62,6 +67,7 @@ function validateConfig(value: unknown): asserts value is RedactedConfig { const
 function diagnostics(value: unknown, name: string): void { if (!Array.isArray(value)) invalid(`${name} must be an array`); value.forEach((entry) => { const d = object(entry, name); exact(d, ["code", "message"]); string(d.code, "diagnostic code"); if (!/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(d.code)) invalid("diagnostic code invalid"); string(d.message, "diagnostic message"); }); }
 function counters(value: Record<string, unknown>, booleans: string[], integers: string[]): void { exact(value, [...booleans, ...integers]); booleans.forEach((key) => { if (typeof value[key] !== "boolean") invalid(`${key} invalid`); }); integers.forEach((key) => integer(value[key], key)); }
 function urlList(value: unknown, name: string): void { if (!Array.isArray(value)) invalid(`${name} must be an array`); let previous: string | undefined; const seen = new Set<string>(); value.forEach((entry) => { string(entry, name); url(entry, name); if (seen.has(entry) || (previous !== undefined && previous > entry)) invalid(`${name} must be sorted and unique`); seen.add(entry); previous = entry; }); }
+/** Reports use Date#toISOString() UTC timestamps so serialisation remains deterministic in 0.1. */
 function timestamp(value: unknown, name: string): number { string(value, name); const date = new Date(value); if (Number.isNaN(date.getTime()) || date.toISOString() !== value) invalid(`${name} invalid`); return date.getTime(); }
 function integer(value: unknown, name: string): void { if (!Number.isInteger(value) || (value as number) < 0) invalid(`${name} must be a non-negative integer`); }
 function strings(value: Record<string, unknown>, keys: string[]): void { keys.forEach((key) => string(value[key], key)); }

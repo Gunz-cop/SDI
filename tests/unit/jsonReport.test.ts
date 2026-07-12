@@ -29,8 +29,8 @@ describe("json report", () => {
 
   it("writes stable JSON, flushes, and promotes a temporary report", async () => {
     const writeFile = vi.fn(async () => undefined); const sync = vi.fn(async () => undefined); const close = vi.fn(async () => undefined); const mkdir = vi.fn(async () => undefined); const rename = vi.fn(async () => undefined);
-    await writeJsonReport(report(), { reportPath: "reports/last-run.json", filesystem: { mkdir, open: async () => ({ writeFile, sync, close }), rename, rm: async () => undefined } });
-    expect(mkdir).toHaveBeenCalled(); expect(sync).toHaveBeenCalledOnce(); expect(rename).toHaveBeenCalledWith("reports/last-run.json.tmp", "reports/last-run.json");
+    await writeJsonReport(report(), { reportPath: "reports/last-run.json", tempName: () => "fresh", filesystem: { mkdir, open: async () => ({ writeFile, sync, close }), rename, rm: async () => undefined } });
+    expect(mkdir).toHaveBeenCalled(); expect(sync).toHaveBeenCalledOnce(); expect(rename).toHaveBeenCalledWith("reports/last-run.json.fresh.tmp", "reports/last-run.json");
     const contents = String(writeFile.mock.calls[0]?.[0]);
     expect(contents).toMatch(/^\{\n {2}"schemaVersion": 1,\n {2}"runId": "run-1",/); expect(contents.endsWith("\n")).toBe(true);
   });
@@ -40,6 +40,27 @@ describe("json report", () => {
     await expect(writeJsonReport({ ...report(), durationMs: -1 }, { reportPath: "x.json", filesystem: { mkdir, open, rm } })).rejects.toBeInstanceOf(JsonReportValidationError);
     expect(mkdir).not.toHaveBeenCalled();
     await expect(writeJsonReport(report(), { reportPath: "x.json", filesystem: { mkdir, open, rm } })).rejects.toBeInstanceOf(JsonReportWriteError);
+  });
+
+  it("uses a new temporary name when a previous temporary file remains", async () => {
+    const paths: string[] = []; let name = "previous";
+    const filesystem = { mkdir: async () => undefined, open: async (path: string) => { paths.push(path); return { writeFile: async () => undefined, sync: async () => undefined, close: async () => undefined }; }, rename: async () => undefined, rm: async () => undefined };
+    await writeJsonReport(report(), { reportPath: "report.json", tempName: () => name, filesystem });
+    name = "fresh";
+    await writeJsonReport(report(), { reportPath: "report.json", tempName: () => name, filesystem });
+    expect(paths).toEqual(["report.json.previous.tmp", "report.json.fresh.tmp"]);
+  });
+
+  it.each(["write", "sync", "close"])("preserves the primary %s failure while cleaning the temporary", async (failure) => {
+    const primary = new Error(failure); const close = vi.fn(async () => { if (failure !== "write" && failure !== "sync") throw primary; throw new Error("close"); });
+    const handle = { writeFile: async () => { if (failure === "write") throw primary; }, sync: async () => { if (failure === "sync") throw primary; }, close };
+    const rename = vi.fn(async () => undefined); const rm = vi.fn(async () => undefined);
+    await expect(writeJsonReport(report(), { reportPath: "report.json", tempName: () => "temp", filesystem: { mkdir: async () => undefined, open: async () => handle, rename, rm } })).rejects.toMatchObject({ cause: failure === "write" || failure === "sync" ? primary : primary });
+    expect(rename).not.toHaveBeenCalled(); expect(rm).toHaveBeenCalledOnce();
+  });
+
+  it("rejects non-canonical ISO timestamps", () => {
+    expect(() => validateExecutionReport({ ...report(), startedAt: "2026-07-12T00:00:00Z" })).toThrow(JsonReportValidationError);
   });
 
   it("keeps the publish/state commit boundary in a test-only harness", async () => {
