@@ -403,22 +403,21 @@ describe("IndexNowDestination", () => {
   });
 
   it("preserves timeout when it happens before a later external abort", async () => {
-    const external = new EventTarget() as AbortSignal;
+    const external = new AbortController();
     let triggerTimeout: (() => void) | undefined;
     const sleep = vi.fn(async () => undefined);
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockImplementationOnce(async () => {
         triggerTimeout?.();
-        external.dispatchEvent(new Event("abort"));
+        external.abort();
         throw new Error("aborted");
-      })
-      .mockResolvedValueOnce(new Response(undefined, { status: 202 }));
+      });
     const destination = new IndexNowDestination({
       host: "example.com",
       key: "test-key",
       fetch,
-      signal: external,
+      signal: external.signal,
       sleep,
       setTimeout: (callback) => {
         triggerTimeout = callback;
@@ -428,11 +427,12 @@ describe("IndexNowDestination", () => {
     });
 
     await expect(destination.publish(changes({ created: [record("https://example.com/page")] }))).resolves.toEqual({
-      accepted: true,
+      accepted: false,
       submittedUrls: 1,
-      batches: [{ size: 1, attempts: 2, status: 202 }],
+      batches: [{ size: 1, attempts: 2, status: null, failure: "aborted" }],
     });
     expect(sleep).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
 

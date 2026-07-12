@@ -95,6 +95,10 @@ export class IndexNowDestination implements Destination {
   }
 
   private async sendAttempt(urlList: string[]): Promise<AttemptOutcome> {
+    if (this.options.signal?.aborted === true) {
+      return { kind: "transport", failure: "aborted" };
+    }
+
     const controller = new AbortController();
     let abortCause: "timeout" | "aborted" | undefined;
     const abortForExternalSignal = () => {
@@ -102,11 +106,7 @@ export class IndexNowDestination implements Destination {
       controller.abort();
     };
 
-    if (this.options.signal?.aborted === true) {
-      abortForExternalSignal();
-    } else {
-      this.options.signal?.addEventListener("abort", abortForExternalSignal, { once: true });
-    }
+    this.options.signal?.addEventListener("abort", abortForExternalSignal, { once: true });
 
     const timeout = this.setTimeout(() => {
       abortCause ??= "timeout";
