@@ -1,7 +1,13 @@
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { copyFile, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { dirname } from "node:path";
 import { FINGERPRINT_PROFILE } from "../core/fingerprint.js";
 import { normalizeUrl, UrlNormalizationError } from "../core/normalize.js";
-import type { DiscoveryState, TrailingSlashPolicy, UrlRecord } from "../core/types.js";
+import type { DiscoveryState, StateStore, TrailingSlashPolicy, UrlRecord } from "../core/types.js";
+
+interface FileStateFilesystem {
+  rename(from: string, to: string): Promise<void>;
+}
 
 export interface FileStateStoreOptions {
   statePath: string;
@@ -10,9 +16,16 @@ export interface FileStateStoreOptions {
   siteUrl: string;
   trailingSlash: TrailingSlashPolicy;
   now?: () => Date;
+  filesystem?: Partial<FileStateFilesystem>;
 }
 
-export type FileStateErrorCode = "state-corrupt" | "state-incompatible" | "legacy-invalid" | "legacy-collision";
+export type FileStateErrorCode =
+  | "state-corrupt"
+  | "state-incompatible"
+  | "legacy-invalid"
+  | "legacy-collision"
+  | "state-save-failed"
+  | "state-save-rollback-failed";
 
 export class FileStateError extends Error {
   constructor(
@@ -26,14 +39,15 @@ export class FileStateError extends Error {
 }
 
 /**
- * Loads SDI's versioned state or imports the legacy snapshot into memory.
- * save() is deliberately introduced in Stage 3.4, so this class does not yet implement StateStore.
+ * Loads and atomically saves SDI's versioned JSON state.
  */
-export class FileStateStore {
+export class FileStateStore implements StateStore {
   private readonly now: () => Date;
+  private readonly rename: (from: string, to: string) => Promise<void>;
 
   constructor(private readonly options: FileStateStoreOptions) {
     this.now = options.now ?? (() => new Date());
+    this.rename = options.filesystem?.rename ?? rename;
   }
 
   async load(): Promise<DiscoveryState | null> {
@@ -49,6 +63,59 @@ export class FileStateStore {
       }
 
       throw error;
+    }
+  }
+
+  async save(next: DiscoveryState): Promise<void> {
+    const state = parseDiscoveryState(next, "state to save");
+    assertStateCompatibility(state, this.options);
+    const serialized = `${JSON.stringify(state, null, 2)}\n`;
+    const statePath = this.options.statePath;
+    const tempPath = `${statePath}.tmp`;
+    const backupPath = `${statePath}.bak`;
+    const stateExisted = await fileExists(statePath);
+    let movedPreviousState = false;
+
+    try {
+      await mkdir(dirname(statePath), { recursive: true });
+      await writeAndFlush(tempPath, serialized);
+
+      if (!stateExisted) {
+        await this.backupLegacyBeforeFirstSave();
+      }
+
+      if (stateExisted) {
+        await this.rename(statePath, backupPath);
+        movedPreviousState = true;
+      }
+
+      try {
+        await this.rename(tempPath, statePath);
+      } catch (promotionError: unknown) {
+        if (movedPreviousState) {
+          try {
+            await this.rename(backupPath, statePath);
+          } catch (rollbackError: unknown) {
+            throw new FileStateError(
+              "state-save-rollback-failed",
+              `State promotion and rollback both failed: ${statePath}`,
+              { cause: { promotionError, rollbackError } },
+            );
+          }
+        }
+
+        throw new FileStateError("state-save-failed", `State promotion failed: ${statePath}`, {
+          cause: promotionError,
+        });
+      }
+    } catch (error: unknown) {
+      await removeTempBestEffort(tempPath);
+
+      if (error instanceof FileStateError) {
+        throw error;
+      }
+
+      throw new FileStateError("state-save-failed", `State save failed: ${statePath}`, { cause: error });
     }
   }
 
@@ -94,6 +161,22 @@ export class FileStateStore {
 
     assertStateCompatibility(state, this.options);
     return state;
+  }
+
+  private async backupLegacyBeforeFirstSave(): Promise<void> {
+    if (this.options.legacyStatePath === undefined) {
+      return;
+    }
+
+    try {
+      await copyFile(this.options.legacyStatePath, `${this.options.statePath}.legacy.bak`, constants.COPYFILE_EXCL);
+    } catch (error: unknown) {
+      if (isMissingFile(error) || isFileAlreadyExists(error)) {
+        return;
+      }
+
+      throw error;
+    }
   }
 }
 
@@ -331,8 +414,44 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: string[]): boolean
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
+async function writeAndFlush(path: string, contents: string): Promise<void> {
+  const handle = await open(path, "wx");
+
+  try {
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function removeTempBestEffort(path: string): Promise<void> {
+  try {
+    await rm(path, { force: true });
+  } catch {
+    // Preserve the original save failure if cleanup itself cannot complete.
+  }
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error: unknown) {
+    if (isMissingFile(error)) {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
 function isMissingFile(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function isFileAlreadyExists(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
 }
 
 function isCorruptState(error: unknown): error is FileStateError {
