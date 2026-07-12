@@ -1,0 +1,6 @@
+{
+  "https://legacy.example.test/articles": {
+    "url": "https://legacy.example.test/other",
+    "hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  }
+}

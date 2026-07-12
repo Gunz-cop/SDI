@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "siteId": "state-site",
+  "siteUrl": "https://state.example.test",
+  "trailingSlash": "preserve",
+  "fingerprintProfile": "sha256-raw-html-v1",
+  "updatedAt": "2026-07-12T00:00:00.000Z",
+  "resources": {
+    "https://state.example.test/": {
+      "url": "https://state.example.test/",
+      "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "https://state.example.test/about": {
+      "url": "https://state.example.test/about",
+      "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "lastmod": "2026-07-11"
+    }
+  }
+}

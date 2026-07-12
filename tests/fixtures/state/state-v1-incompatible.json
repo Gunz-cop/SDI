@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "siteId": "other-site",
+  "siteUrl": "https://state.example.test",
+  "trailingSlash": "preserve",
+  "fingerprintProfile": "sha256-raw-html-v1",
+  "updatedAt": "2026-07-12T00:00:00.000Z",
+  "resources": {}
+}

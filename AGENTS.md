@@ -30,3 +30,7 @@ Si durante una etapa aparece una mejora fuera de alcance, no se implementa. Se r
 ## Calidad
 
 Todo código nuevo debe ser modular, tipado, probado y fácil de mantener. Los agentes deben mantener la documentación coherente con los cambios aprobados y no modificar silenciosamente la arquitectura congelada.
+
+## Identidad Git de Terra
+
+Para los commits y pushes de Terra en este repositorio se usa la identidad Git local `Terra (Codex) <terra@users.noreply.github.com>`. Los chats posteriores deben conservarla salvo instrucción explícita del usuario.
