@@ -30,3 +30,29 @@ export interface ChangeSet {
   unchanged: UrlRecord[];
   deleted: UrlRecord[];
 }
+
+/** Internal seam implemented by the static-build source in the next stage. */
+export interface Source {
+  discover(): Promise<DiscoveredResource[]>;
+}
+
+/** Internal seam implemented by SDI's versioned JSON state store in the next stage. */
+export interface StateStore {
+  load(): Promise<DiscoveryState | null>;
+  save(next: DiscoveryState): Promise<void>;
+}
+
+/** Internal seam implemented by IndexNow in the destination stage. */
+export interface Destination {
+  publish(changes: ChangeSet): Promise<PublishResult>;
+}
+
+export interface PublishResult {
+  accepted: boolean;
+  submittedUrls: number;
+  batches: Array<{
+    size: number;
+    status: number;
+    attempts: number;
+  }>;
+}
