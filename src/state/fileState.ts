@@ -43,6 +43,14 @@ const STALE_LOCK_MS = 30 * 60 * 1000;
 
 interface StateLockFilesystem {
   readFile(path: string, encoding: "utf8"): Promise<string>;
+  open(path: string, flags: "wx"): Promise<StateLockFileHandle>;
+  remove(path: string): Promise<void>;
+}
+
+interface StateLockFileHandle {
+  writeFile(contents: string, encoding: "utf8"): Promise<void>;
+  sync(): Promise<void>;
+  close(): Promise<void>;
 }
 
 export interface StateLockOptions {
@@ -103,10 +111,10 @@ export async function acquireStateLock(options: StateLockOptions): Promise<State
 
   await mkdir(dirname(options.lockPath), { recursive: true });
 
-  let handle;
+  let handle: StateLockFileHandle;
 
   try {
-    handle = await open(options.lockPath, "wx");
+    handle = await openLockFile(options);
   } catch (error: unknown) {
     if (!isFileAlreadyExists(error)) {
       throw error;
@@ -117,14 +125,24 @@ export async function acquireStateLock(options: StateLockOptions): Promise<State
     throw new StateLockError(code, `State lock already exists: ${options.lockPath}`, inspection, { cause: error });
   }
 
+  let operationError: unknown;
+
   try {
     await handle.writeFile(contents, "utf8");
     await handle.sync();
   } catch (error: unknown) {
-    await removeTempBestEffort(options.lockPath);
-    throw error;
-  } finally {
+    operationError = error;
+  }
+
+  try {
     await handle.close();
+  } catch (error: unknown) {
+    operationError ??= error;
+  }
+
+  if (operationError !== undefined) {
+    await removeLockBestEffort(options, options.lockPath);
+    throw operationError;
   }
 
   const inspection: Extract<StateLockInspection, { kind: "active" }> = {
@@ -160,6 +178,10 @@ export async function inspectStateLock(options: StateLockOptions): Promise<State
     return { kind: "invalid", lockPath: options.lockPath, contents };
   }
 
+  if (metadata.siteId !== options.siteId) {
+    return { kind: "invalid", lockPath: options.lockPath, contents };
+  }
+
   const stale = await isStaleLock(metadata, options);
   return stale
     ? { kind: "stale", lockPath: options.lockPath, contents, metadata }
@@ -168,7 +190,7 @@ export async function inspectStateLock(options: StateLockOptions): Promise<State
 
 /** Removes only the exact stale lock previously inspected by the caller. */
 export async function removeStaleLock(inspection: StateLockInspection, options: StateLockOptions): Promise<boolean> {
-  if (inspection.kind !== "stale") {
+  if (inspection.kind !== "stale" || inspection.lockPath !== options.lockPath) {
     return false;
   }
 
@@ -185,7 +207,7 @@ export async function removeStaleLock(inspection: StateLockInspection, options: 
   }
 
   try {
-    await rm(inspection.lockPath);
+    await removeLockFile(options, inspection.lockPath);
     return true;
   } catch (error: unknown) {
     if (isMissingFile(error)) {
@@ -626,11 +648,32 @@ async function releaseStateLock(
     throw new StateLockError("lock-owner-lost", `State lock ownership changed: ${inspection.lockPath}`, inspection);
   }
 
-  await rm(inspection.lockPath);
+  await removeLockFile(options, inspection.lockPath);
 }
 
 async function readLockFile(options: StateLockOptions): Promise<string> {
   return options.filesystem?.readFile?.(options.lockPath, "utf8") ?? readFile(options.lockPath, "utf8");
+}
+
+async function openLockFile(options: StateLockOptions): Promise<StateLockFileHandle> {
+  return options.filesystem?.open?.(options.lockPath, "wx") ?? open(options.lockPath, "wx");
+}
+
+async function removeLockFile(options: StateLockOptions, path: string): Promise<void> {
+  if (options.filesystem?.remove !== undefined) {
+    await options.filesystem.remove(path);
+    return;
+  }
+
+  await rm(path);
+}
+
+async function removeLockBestEffort(options: StateLockOptions, path: string): Promise<void> {
+  try {
+    await removeLockFile(options, path);
+  } catch {
+    // Preserve the original lock-write failure if cleanup itself cannot complete.
+  }
 }
 
 function parseLockMetadata(contents: string): StateLockMetadata | null {

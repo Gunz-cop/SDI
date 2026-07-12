@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, open as openFile, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -50,6 +50,41 @@ describe("state lock", () => {
     await lease.release();
   });
 
+  it("closes a partial lock before best-effort cleanup and preserves the write error", async () => {
+    const directory = await temporaryDirectory();
+    const lockPath = resolve(directory, "run.lock");
+    const events: string[] = [];
+    const writeError = new Error("injected lock write failure");
+
+    await expect(
+      acquireStateLock(lockOptions(lockPath, {
+        filesystem: {
+          open: async (path, flags) => {
+            const handle = await openFile(path, flags);
+            return {
+              writeFile: async () => {
+                events.push("write");
+                throw writeError;
+              },
+              sync: () => handle.sync(),
+              close: async () => {
+                events.push("close");
+                await handle.close();
+              },
+            };
+          },
+          remove: async (path) => {
+            events.push("remove");
+            await rm(path);
+          },
+        },
+      })),
+    ).rejects.toBe(writeError);
+
+    expect(events).toEqual(["write", "close", "remove"]);
+    await expect(access(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("classifies a local lock with an active PID as active", async () => {
     const directory = await temporaryDirectory();
     const lockPath = resolve(directory, "run.lock");
@@ -68,6 +103,19 @@ describe("state lock", () => {
     await expect(inspectStateLock(lockOptions(lockPath, { pidIsRunning: async () => false }))).resolves.toMatchObject({
       kind: "stale",
     });
+  });
+
+  it.each([
+    ["local missing PID", "local-host", "2026-07-12T11:59:00.000Z"],
+    ["remote old", "remote-host", "2026-07-12T11:00:00.000Z"],
+  ] as const)("keeps a lock for another site invalid regardless of %s", async (_scenario, hostname, startedAt) => {
+    const directory = await temporaryDirectory();
+    const lockPath = resolve(directory, "run.lock");
+    await writeLock(lockPath, lockMetadata({ siteId: "other-site", hostname, startedAt }));
+
+    await expect(
+      inspectStateLock(lockOptions(lockPath, { pidIsRunning: async () => { throw new Error("PID must not be checked"); } })),
+    ).resolves.toMatchObject({ kind: "invalid" });
   });
 
   it.each([
@@ -117,6 +165,21 @@ describe("state lock", () => {
 
     await expect(removeStaleLock(inspection, options)).resolves.toBe(false);
     await expect(inspectStateLock(options)).resolves.toMatchObject({ kind: "active", metadata: { pid: 99 } });
+  });
+
+  it("does not remove either lock when options target a different path", async () => {
+    const directory = await temporaryDirectory();
+    const firstPath = resolve(directory, "first.lock");
+    const secondPath = resolve(directory, "second.lock");
+    const metadata = lockMetadata({ hostname: "remote-host", startedAt: "2026-07-12T11:00:00.000Z" });
+    await writeLock(firstPath, metadata);
+    await writeLock(secondPath, metadata);
+    const firstOptions = lockOptions(firstPath);
+    const inspection = await inspectStateLock(firstOptions);
+
+    await expect(removeStaleLock(inspection, lockOptions(secondPath))).resolves.toBe(false);
+    await expect(access(firstPath)).resolves.toBeUndefined();
+    await expect(access(secondPath)).resolves.toBeUndefined();
   });
 
   it("removes a valid stale lock only when explicitly requested", async () => {
