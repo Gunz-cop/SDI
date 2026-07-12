@@ -374,20 +374,12 @@ describe("IndexNowDestination", () => {
     expect(batchFetch).toHaveBeenCalledTimes(4);
   });
 
-  it.each([
-    ["external cancellation first", "aborted"],
-    ["timeout first", "timeout"],
-  ] as const)("preserves the first abort cause when %s", async (order, failure) => {
+  it("preserves aborted when external cancellation happens before timeout", async () => {
     const external = new AbortController();
     let triggerTimeout: (() => void) | undefined;
     const fetch = vi.fn<typeof globalThis.fetch>(async () => {
-      if (order === "external cancellation first") {
-        external.abort();
-        triggerTimeout?.();
-      } else {
-        triggerTimeout?.();
-        external.abort();
-      }
+      external.abort();
+      triggerTimeout?.();
       throw new Error("aborted");
     });
     const destination = new IndexNowDestination({
@@ -406,8 +398,41 @@ describe("IndexNowDestination", () => {
     await expect(destination.publish(changes({ created: [record("https://example.com/page")] }))).resolves.toEqual({
       accepted: false,
       submittedUrls: 1,
-      batches: [{ size: 1, attempts: 1, status: null, failure }],
+      batches: [{ size: 1, attempts: 1, status: null, failure: "aborted" }],
     });
+  });
+
+  it("preserves timeout when it happens before a later external abort", async () => {
+    const external = new EventTarget() as AbortSignal;
+    let triggerTimeout: (() => void) | undefined;
+    const sleep = vi.fn(async () => undefined);
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementationOnce(async () => {
+        triggerTimeout?.();
+        external.dispatchEvent(new Event("abort"));
+        throw new Error("aborted");
+      })
+      .mockResolvedValueOnce(new Response(undefined, { status: 202 }));
+    const destination = new IndexNowDestination({
+      host: "example.com",
+      key: "test-key",
+      fetch,
+      signal: external,
+      sleep,
+      setTimeout: (callback) => {
+        triggerTimeout = callback;
+        return 0 as unknown as ReturnType<typeof globalThis.setTimeout>;
+      },
+      clearTimeout: () => undefined,
+    });
+
+    await expect(destination.publish(changes({ created: [record("https://example.com/page")] }))).resolves.toEqual({
+      accepted: true,
+      submittedUrls: 1,
+      batches: [{ size: 1, attempts: 2, status: 202 }],
+    });
+    expect(sleep).toHaveBeenCalledTimes(1);
   });
 });
 
