@@ -11,6 +11,14 @@ export interface IndexNowDestinationOptions {
   fetch?: typeof globalThis.fetch;
 }
 
+/** A ChangeSet from the core must classify each URL exactly once. */
+export class IndexNowChangeSetInvariantError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IndexNowChangeSetInvariantError";
+  }
+}
+
 /** IndexNow destination without retry or transport-error classification (both arrive in 4.2). */
 export class IndexNowDestination implements Destination {
   private readonly endpoint: string;
@@ -51,21 +59,49 @@ export class IndexNowDestination implements Destination {
 }
 
 function urlsToPublish(changes: ChangeSet): string[] {
-  const seen = new Set<string>();
-  const urls = [
-    ...changes.created.map(({ url }) => url),
-    ...changes.updated.map(({ after }) => after.url),
-    ...changes.deleted.map(({ url }) => url),
-  ];
+  validateChangeSet(changes);
 
-  return urls.filter((url) => {
-    if (seen.has(url)) {
-      return false;
+  return [
+    ...changes.created.map(({ url }) => url).sort(),
+    ...changes.updated.map(({ after }) => after.url).sort(),
+    ...changes.deleted.map(({ url }) => url).sort(),
+  ];
+}
+
+function validateChangeSet(changes: ChangeSet): void {
+  const categoriesByUrl = new Map<string, string>();
+
+  validateCategory("created", changes.created.map(({ url }) => url), categoriesByUrl);
+  validateUpdated(changes.updated, categoriesByUrl);
+  validateCategory("unchanged", changes.unchanged.map(({ url }) => url), categoriesByUrl);
+  validateCategory("deleted", changes.deleted.map(({ url }) => url), categoriesByUrl);
+}
+
+function validateUpdated(changes: ChangeSet["updated"], categoriesByUrl: Map<string, string>): void {
+  for (const { before, after } of changes) {
+    if (before.url !== after.url) {
+      throw new IndexNowChangeSetInvariantError("Updated records must retain the same URL.");
     }
 
-    seen.add(url);
-    return true;
-  });
+    validateUrl("updated", after.url, categoriesByUrl);
+  }
+}
+
+function validateCategory(category: string, urls: string[], categoriesByUrl: Map<string, string>): void {
+  for (const url of urls) {
+    validateUrl(category, url, categoriesByUrl);
+  }
+}
+
+function validateUrl(category: string, url: string, categoriesByUrl: Map<string, string>): void {
+  const previousCategory = categoriesByUrl.get(url);
+
+  if (previousCategory !== undefined) {
+    const reason = previousCategory === category ? `duplicated in ${category}` : `in both ${previousCategory} and ${category}`;
+    throw new IndexNowChangeSetInvariantError(`ChangeSet URL ${reason}: ${url}`);
+  }
+
+  categoriesByUrl.set(url, category);
 }
 
 function chunk<T>(values: T[], size: number): T[][] {

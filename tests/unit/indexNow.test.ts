@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { IndexNowDestination } from "../../src/destination/indexNow.js";
+import { IndexNowChangeSetInvariantError, IndexNowDestination } from "../../src/destination/indexNow.js";
 import type { ChangeSet, UrlRecord } from "../../src/core/types.js";
 
 function record(url: string): UrlRecord {
@@ -67,6 +67,32 @@ describe("IndexNowDestination", () => {
     });
   });
 
+  it("orders created, updated, and deleted URLs without mutating the ChangeSet", async () => {
+    const { destination, fetch } = createDestination([200]);
+    const input = changes({
+      created: [record("https://example.com/created-z"), record("https://example.com/created-a")],
+      updated: [
+        { before: record("https://example.com/updated-z"), after: record("https://example.com/updated-z") },
+        { before: record("https://example.com/updated-a"), after: record("https://example.com/updated-a") },
+      ],
+      deleted: [record("https://example.com/deleted-z"), record("https://example.com/deleted-a")],
+    });
+
+    await destination.publish(input);
+
+    expect(input.created.map(({ url }) => url)).toEqual(["https://example.com/created-z", "https://example.com/created-a"]);
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({
+      urlList: [
+        "https://example.com/created-a",
+        "https://example.com/created-z",
+        "https://example.com/updated-a",
+        "https://example.com/updated-z",
+        "https://example.com/deleted-a",
+        "https://example.com/deleted-z",
+      ],
+    });
+  });
+
   it("uses batches of at most 1,000 URLs and accepts HTTP 200", async () => {
     const { destination, fetch } = createDestination([200, 200]);
     const created = Array.from({ length: 1_001 }, (_, index) => record(`https://example.com/${index}`));
@@ -82,6 +108,18 @@ describe("IndexNowDestination", () => {
       ],
     });
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps exactly 1,000 URLs in one batch", async () => {
+    const { destination, fetch } = createDestination([200]);
+    const created = Array.from({ length: 1_000 }, (_, index) => record(`https://example.com/${index}`));
+
+    await expect(destination.publish(changes({ created }))).resolves.toEqual({
+      accepted: true,
+      submittedUrls: 1_000,
+      batches: [{ size: 1_000, attempts: 1, status: 200 }],
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("fails fast on a non-accepted HTTP response and counts only attempted batches", async () => {
@@ -105,6 +143,63 @@ describe("IndexNowDestination", () => {
     const { destination, fetch } = createDestination([]);
 
     await expect(destination.publish(changes())).resolves.toEqual({ accepted: true, submittedUrls: 0, batches: [] });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([204, 403, 422])("rejects HTTP %i", async (status) => {
+    const { destination } = createDestination([status]);
+
+    await expect(destination.publish(changes({ created: [record("https://example.com/page")] }))).resolves.toEqual({
+      accepted: false,
+      submittedUrls: 1,
+      batches: [{ size: 1, attempts: 1, status }],
+    });
+  });
+
+  it.each<[keyof Pick<ChangeSet, "created" | "updated" | "unchanged" | "deleted">, ChangeSet]>([
+    ["created", changes({ created: [record("https://example.com/page"), record("https://example.com/page")] })],
+    [
+      "updated",
+      changes({
+        updated: [
+          { before: record("https://example.com/page"), after: record("https://example.com/page") },
+          { before: record("https://example.com/page"), after: record("https://example.com/page") },
+        ],
+      }),
+    ],
+    ["unchanged", changes({ unchanged: [record("https://example.com/page"), record("https://example.com/page")] })],
+    ["deleted", changes({ deleted: [record("https://example.com/page"), record("https://example.com/page")] })],
+  ])("rejects a duplicate URL in %s before fetching", async (_category, changeSet) => {
+    const { destination, fetch } = createDestination([]);
+
+    await expect(destination.publish(changeSet)).rejects.toBeInstanceOf(IndexNowChangeSetInvariantError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a URL present in more than one category before fetching", async () => {
+    const { destination, fetch } = createDestination([]);
+
+    await expect(
+      destination.publish(
+        changes({
+          created: [record("https://example.com/page")],
+          deleted: [record("https://example.com/page")],
+        }),
+      ),
+    ).rejects.toBeInstanceOf(IndexNowChangeSetInvariantError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects an updated record whose URL changes before fetching", async () => {
+    const { destination, fetch } = createDestination([]);
+
+    await expect(
+      destination.publish(
+        changes({
+          updated: [{ before: record("https://example.com/before"), after: record("https://example.com/after") }],
+        }),
+      ),
+    ).rejects.toBeInstanceOf(IndexNowChangeSetInvariantError);
     expect(fetch).not.toHaveBeenCalled();
   });
 });
