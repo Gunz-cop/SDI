@@ -1,0 +1,10 @@
+{
+  "https://legacy.example.test/articles": {
+    "url": "https://legacy.example.test/articles",
+    "hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "https://legacy.example.test/articles/": {
+    "url": "https://legacy.example.test/articles/",
+    "hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  }
+}
