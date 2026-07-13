@@ -24,6 +24,17 @@ Para usar el paquete desde un proyecto consumidor cuando se publique o se instal
 npm install --save-dev @sdi/cli
 ```
 
+### Validación local desde un tarball
+
+La preparación del piloto se puede repetir sin publicar el paquete ni instalarlo desde el workspace. Desde la raíz de SDI, genera un tarball real, instala ese archivo en un consumidor Astro temporal limpio y ejecuta `sdi` desde `node_modules/.bin`:
+
+```bash
+npm run build
+node examples/astro/verify-tarball.mjs
+```
+
+El validador inspecciona el contenido de `npm pack`, copia `examples/astro/consumer` a un directorio temporal, instala el `.tgz` y ejecuta `npx sdi --help`, `npx sdi --version`, `npx sdi baseline --confirm` y dos `npx sdi run --dry-run`. Después de instalar, fuerza modo offline y bloquea `fetch`; por tanto baseline y los dry-runs fallarían si intentaran usar la red. El directorio temporal se elimina al terminar.
+
 ## Ejecución
 
 Construye el binario y consulta su ayuda:

@@ -10,6 +10,7 @@ Se debe actualizar `Unreleased` cuando un cambio aprobado modifica el comportami
 
 ### Added
 
+- Consumidor Astro externo reproducible que valida la instalación local del tarball de SDI, el binario `sdi`, baseline y dos dry-runs sin red.
 - Cargador interno de `sdi.config.mjs` con validación estricta, defaults documentados, rutas resueltas y compatibilidad limitada con overrides legacy.
 - Contrato interno `ResolvedConfig`, error `SdiConfigError` y conversión explícita a `RedactedConfig` que no expone la clave de IndexNow.
 - Runner read-only para `dry-run`: lock, state, discovery Astro con metadata, fingerprint, comparación y reporte JSON sin publicar ni guardar state.
