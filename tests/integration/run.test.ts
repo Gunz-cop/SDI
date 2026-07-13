@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ResolvedConfig } from "../../src/config.js";
 import { fingerprintHtml } from "../../src/core/fingerprint.js";
 import { JsonReportWriteError } from "../../src/report/jsonReport.js";
-import { runBaseline, runDryRun } from "../../src/run.js";
+import { runBaseline, runDryRun, runLive } from "../../src/run.js";
 import { FileStateError } from "../../src/state/fileState.js";
 
 const directories: string[] = [];
@@ -287,6 +287,112 @@ describe("baseline runner", () => {
   });
 });
 
+describe("live runner", () => {
+  it("requires a baseline before discovery or publication", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    let published = false;
+
+    const outcome = await runLive(liveOptions(config), {
+      createDestination: () => ({ publish: async () => { published = true; return acceptedResult(0); } }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", reportWritten: true, report: { errors: [{ code: "SDI_BASELINE_REQUIRED" }] } });
+    expect(published).toBe(false);
+    await expect(access(config.statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("publishes accepted changes before advancing state", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    await writeFile(config.statePath, JSON.stringify(stateWithCurrentOnly(config, "a".repeat(64)), null, 2));
+    let publishedChanges: unknown;
+
+    const outcome = await runLive(liveOptions(config), {
+      createDestination: () => ({ publish: async (changes) => { publishedChanges = changes; return acceptedResult(1); } }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "success", report: { indexNow: { accepted: true, submitted: 1 }, changes: { updated: 1 } } });
+    expect(publishedChanges).toMatchObject({ updated: [{ before: { url: "https://runner.example.test/" }, after: { url: "https://runner.example.test/" } }] });
+    expect(await readFile(config.statePath, "utf8")).toContain(fingerprintHtml(Buffer.from("<!doctype html><title>Runner</title>\n")));
+  });
+
+  it("keeps state unchanged when IndexNow rejects a batch", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    const before = JSON.stringify(stateWithCurrentOnly(config, "a".repeat(64)), null, 2);
+    await writeFile(config.statePath, before);
+
+    const outcome = await runLive(liveOptions(config), {
+      createDestination: () => ({ publish: async () => ({ accepted: false, submittedUrls: 1, batches: [{ size: 1, attempts: 1, status: 400 }] }) }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", report: { indexNow: { accepted: false }, errors: [{ code: "INDEXNOW_HTTP_400" }] } });
+    await expect(readFile(config.statePath, "utf8")).resolves.toBe(before);
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("blocks a large delete without publishing or advancing state", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    const before = JSON.stringify(stateWithThreeResources(config), null, 2);
+    await writeFile(config.statePath, before);
+    let published = false;
+
+    const outcome = await runLive(liveOptions(config), {
+      createDestination: () => ({ publish: async () => { published = true; return acceptedResult(0); } }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", report: { errors: [{ code: "SDI_LARGE_DELETE" }] } });
+    expect(published).toBe(false);
+    await expect(readFile(config.statePath, "utf8")).resolves.toBe(before);
+  });
+
+  it("force publishes unchanged URLs without falsifying the report or rewriting state", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    const before = JSON.stringify(stateWithCurrentOnly(config, fingerprintHtml(Buffer.from("<!doctype html><title>Runner</title>\n"))), null, 2);
+    await writeFile(config.statePath, before);
+    let publishedChanges: { updated: Array<{ before: { hash: string }; after: { hash: string } }> } | undefined;
+
+    const outcome = await runLive({ ...liveOptions(config), force: true }, {
+      createDestination: () => ({ publish: async (changes) => { publishedChanges = changes; return acceptedResult(1); } }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "success", report: { changes: { created: 0, updated: 0, unchanged: 1, deleted: 0 }, warnings: [{ code: "SDI_FORCE_ENABLED" }] } });
+    expect(publishedChanges?.updated).toHaveLength(1);
+    expect(publishedChanges?.updated[0].before.hash).toBe(publishedChanges?.updated[0].after.hash);
+    await expect(readFile(config.statePath, "utf8")).resolves.toBe(before);
+  });
+
+  it("does not call IndexNow or rewrite state for an unchanged non-force run", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    const before = JSON.stringify(stateWithCurrentOnly(config, fingerprintHtml(Buffer.from("<!doctype html><title>Runner</title>\n"))), null, 2);
+    await writeFile(config.statePath, before);
+    let published = false;
+
+    const outcome = await runLive(liveOptions(config), {
+      createDestination: () => ({ publish: async () => { published = true; return acceptedResult(0); } }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "success", report: { changes: { unchanged: 1 } } });
+    if (outcome.kind !== "success") {
+      throw new Error("live run should succeed");
+    }
+
+    expect(outcome.report.indexNow).toBeUndefined();
+    expect(published).toBe(false);
+    await expect(readFile(config.statePath, "utf8")).resolves.toBe(before);
+  });
+});
+
 async function fixtureDirectory(options: { sitemap?: string; emptyInventory?: boolean } = {}): Promise<string> {
   const directory = await mkdtemp(resolve(tmpdir(), "sdi-run-"));
   directories.push(directory);
@@ -341,6 +447,32 @@ function legacyState(): object {
     "https://runner.example.test/": {
       url: "https://runner.example.test/",
       hash: fingerprintHtml(Buffer.from("<!doctype html><title>Runner</title>\n")),
+    },
+  };
+}
+
+function liveConfig(config: ResolvedConfig): ResolvedConfig {
+  return { ...config, indexNow: { keyEnv: "INDEXNOW_KEY", key: "test-key" } };
+}
+
+function liveOptions(config: ResolvedConfig): Parameters<typeof runLive>[0] {
+  return { config, mode: "live", force: false, allowLargeDelete: false, clearStaleLock: false };
+}
+
+function acceptedResult(submittedUrls: number): { accepted: true; submittedUrls: number; batches: Array<{ size: number; attempts: number; status: number }> } {
+  return { accepted: true, submittedUrls, batches: submittedUrls === 0 ? [] : [{ size: submittedUrls, attempts: 1, status: 200 }] };
+}
+
+function stateWithCurrentOnly(config: ResolvedConfig, hash: string): object {
+  return {
+    schemaVersion: 1,
+    siteId: config.siteId,
+    siteUrl: config.siteUrl,
+    trailingSlash: config.normalization.trailingSlash,
+    fingerprintProfile: "sha256-raw-html-v1",
+    updatedAt: "2026-07-13T00:00:00.000Z",
+    resources: {
+      "https://runner.example.test/": { url: "https://runner.example.test/", hash },
     },
   };
 }

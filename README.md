@@ -8,7 +8,7 @@ El producto elimina la lógica copiada y divergente de varios proyectos: en luga
 
 ## Estado del proyecto
 
-Las Etapas 1–4 están completadas. Las subetapas 5.0–5.2 entregan la configuración interna, dry-run y baseline del runner. La arquitectura de SDI 0.1 está congelada. El CLI todavía solo ofrece ayuda y enumera los comandos previstos; live y los comandos funcionales pertenecen a las subetapas restantes de la Etapa 5.
+Las Etapas 1–4 están completadas. Las subetapas 5.0–5.3 entregan la configuración interna y los modos dry-run, baseline y live del runner. La arquitectura de SDI 0.1 está congelada. El CLI todavía solo ofrece ayuda y enumera los comandos previstos; la interfaz funcional pertenece a la subetapa restante de la Etapa 5.
 
 ## Instalación
 

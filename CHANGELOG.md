@@ -14,6 +14,7 @@ Se debe actualizar `Unreleased` cuando un cambio aprobado modifica el comportami
 - Contrato interno `ResolvedConfig`, error `SdiConfigError` y conversión explícita a `RedactedConfig` que no expone la clave de IndexNow.
 - Runner read-only para `dry-run`: lock, state, discovery Astro con metadata, fingerprint, comparación y reporte JSON sin publicar ni guardar state.
 - Runner de `baseline` confirmado para guardar el inventario inicial sin red y sin reemplazar un state existente.
+- Runner live que publica cambios mediante IndexNow y avanza state únicamente tras aceptación completa, con force y guarda de large delete.
 - Contrato `RunOutcome` para separar el resultado funcional del runner de la futura consola y los exit codes del CLI.
 - Cliente interno de IndexNow que publica URLs creadas, actualizadas y eliminadas en batches de hasta 1.000 URLs.
 - Pruebas del payload JSON de IndexNow, batches y fail-fast HTTP.
