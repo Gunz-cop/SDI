@@ -37,6 +37,7 @@ Se debe actualizar `Unreleased` cuando un cambio aprobado modifica el comportami
 
 ### Fixed
 
+- El cargador rechaza rutas de configuración que no terminen exactamente en `.mjs` antes de intentar importarlas.
 - Se completaron los contratos internos omitidos inicialmente en la implementacion de la Etapa 2.
 
 ## [0.1.0] - Por publicar

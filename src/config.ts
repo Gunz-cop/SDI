@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { extname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { RedactedConfig } from "./report/types.js";
 
@@ -51,6 +51,11 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Resol
   const configPath = resolve(cwd, options.configPath ?? "sdi.config.mjs");
   const environment = options.environment ?? process.env;
   const importModule = options.importModule ?? defaultImportModule;
+
+  if (extname(configPath) !== ".mjs") {
+    throw invalidConfig(`SDI config must use the .mjs extension: ${configPath}`);
+  }
+
   let moduleValue: unknown;
 
   try {

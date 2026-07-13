@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadConfig, SdiConfigError, toRedactedConfig } from "../../src/config.js";
 
 const cwd = resolve("workspace");
@@ -21,6 +21,18 @@ describe("SDI config", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it.each(["config.cjs", "config.js", "config"])("rejects %s before importing it", async (configPath) => {
+    const importModule = async (): Promise<unknown> => {
+      throw new Error("importer must not run");
+    };
+    const imported = vi.fn(importModule);
+
+    await expect(loadConfig({ cwd, configPath, importModule: imported })).rejects.toMatchObject({
+      code: "SDI_CONFIG_INVALID",
+    } satisfies Partial<SdiConfigError>);
+    expect(imported).not.toHaveBeenCalled();
   });
 
   it("resolves documented defaults, paths, and the permitted legacy overrides", async () => {
