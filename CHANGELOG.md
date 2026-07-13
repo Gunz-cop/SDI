@@ -10,6 +10,8 @@ Se debe actualizar `Unreleased` cuando un cambio aprobado modifica el comportami
 
 ### Added
 
+- Cargador interno de `sdi.config.mjs` con validación estricta, defaults documentados, rutas resueltas y compatibilidad limitada con overrides legacy.
+- Contrato interno `ResolvedConfig`, error `SdiConfigError` y conversión explícita a `RedactedConfig` que no expone la clave de IndexNow.
 - Cliente interno de IndexNow que publica URLs creadas, actualizadas y eliminadas en batches de hasta 1.000 URLs.
 - Pruebas del payload JSON de IndexNow, batches y fail-fast HTTP.
 - Reintentos acotados de IndexNow para timeout, transporte y respuestas HTTP transitorias, con `Retry-After` y backoff con jitter.

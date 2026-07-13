@@ -417,23 +417,64 @@ export default {
 
 ### Validación
 
-- `siteId`, `siteUrl`, `source.distDir`, `statePath` e `indexNow` son obligatorios para live.
-- `siteUrl` debe ser HTTP(S) y todas las URLs descubiertas deben tener el mismo origin.
-- `trailingSlash` solo acepta `preserve|always|never`.
-- Rutas se resuelven contra el directorio del config.
+- `siteId` es obligatorio, no vacío y estable; no se deriva de la URL.
+- `siteUrl` es obligatorio, HTTP(S), sin credenciales/query/fragment y con path `/`; el valor resuelto es `URL.origin` sin slash final.
+- `source.distDir` y `source.sitemapPath` son obligatorios. Sus rutas se resuelven contra el directorio del config, pero su existencia se comprueba durante discovery.
+- `source.fallbackToHtmlScan` es opcional y su default es `true`.
+- `normalization.trailingSlash` es obligatorio porque forma parte de la identidad persistida; solo acepta `preserve|always|never`.
+- `statePath` y `reportPath` son opcionales, con defaults `./.sdi/state.json` y `./.sdi/last-run.json` relativos al config.
 - `legacyStatePath` es opcional y solo se consulta cuando `statePath` todavía no existe.
+- `indexNow` es estructuralmente opcional. Si existe, `keyEnv` es opcional con default `INDEXNOW_KEY`; debe ser un nombre válido de variable de entorno. `keyLocation` es opcional, HTTP(S) y same-origin con `siteUrl`.
+- Live exige bloque IndexNow y key no vacía antes de lock/discovery. Dry-run y baseline no exigen ninguno de los dos.
 - Unknown keys son error para evitar typos silenciosos.
-- `INDEXNOW_KEY` se resuelve desde environment y nunca se escribe en estado/reporte.
-- En `dry-run`/`baseline`, la clave no es obligatoria.
+- No se admite una `key` literal ni secretos por flags. La key se resuelve solo en memoria desde `keyEnv` y nunca se escribe en estado/reporte.
+
+El loader valida estructura y resuelve rutas/environment disponibles, pero no conoce el modo. Una key ausente queda como `undefined`; el runner aplica los requisitos de live antes de efectos externos.
+
+```ts
+interface ResolvedConfig {
+  readonly configPath: string;
+  readonly siteId: string;
+  readonly siteUrl: string;
+  readonly source: {
+    readonly distDir: string;
+    readonly sitemapPath: string;
+    readonly fallbackToHtmlScan: boolean;
+  };
+  readonly normalization: {
+    readonly trailingSlash: "preserve" | "always" | "never";
+  };
+  readonly statePath: string;
+  readonly legacyStatePath?: string;
+  readonly reportPath: string;
+  readonly indexNow?: {
+    readonly keyEnv: string;
+    readonly key?: string;
+    readonly keyLocation?: string;
+  };
+}
+```
+
+`configPath` es absoluto y forma parte del contrato para diagnósticos; `configDir` no se conserva porque se deriva de él. `ResolvedConfig` se exporta entre módulos internos de config/runner, no como API pública del paquete. `key?: string` es suficiente en 0.1; no se introduce una unión adicional.
 
 ### Precedencia
 
-1. Defaults del producto.
-2. `sdi.config.mjs`.
-3. Variables heredadas permitidas durante migración: `SDI_SITE_URL`, `SDI_DIST_DIR`, `SDI_STATE_PATH` e `INDEXNOW_KEY`.
-4. Flags CLI no sensibles.
+1. Defaults documentados.
+2. Valores explícitos de `sdi.config.mjs`.
+3. Overrides legacy de migración únicamente para `SDI_SITE_URL`, `SDI_DIST_DIR` y `SDI_STATE_PATH`.
+4. La key se obtiene del nombre configurado/default `keyEnv`; por compatibilidad, el default sigue siendo `INDEXNOW_KEY`.
 
-No hay environments overlays, providers de secretos ni config TypeScript en 0.1. El CLI puede cargar `.env` local sin sobrescribir variables ya definidas.
+No existen overrides generales, deep merge, perfiles, providers de secretos ni config TypeScript. `--config` selecciona archivo; modos/guardas CLI no sobrescriben campos. Las rutas relativas de config y overrides legacy se resuelven contra el directorio del config. El CLI puede cargar `.env` local sin sobrescribir variables ya definidas.
+
+### Carga y errores
+
+- Archivo por defecto: `sdi.config.mjs` en `cwd`; `--config` permite una ruta única resuelta desde `cwd`.
+- Carga mediante `import()` de file URL, con default export obligatorio que sea objeto plano.
+- No se aceptan función, Promise, CommonJS, búsqueda ascendente, múltiples archivos, hot reload ni cache-busting genérico. Las pruebas inyectan el importador o usan URLs distintas.
+- Un único `SdiConfigError` con code `SDI_CONFIG_INVALID` representa archivo ausente, import fallido, forma inválida y requisito live ausente. El mensaje puede nombrar el path lógico, nunca valores de environment; `cause` no se imprime por defecto. Todos mapean a exit code `2`.
+- Si no existe configuración suficientemente válida para construir `RedactedConfig`, no se escribe `ExecutionReport`: solo stderr y exit `2`.
+
+`toRedactedConfig(config)` reconstruye una forma cerrada sin spreads y nunca copia `indexNow.key`. Conserva rutas absolutas y `keyEnv`. `keyLocation` se incluye solo si existe una key resuelta y la URL no contiene esa key; si no puede demostrarse segura, se omite en vez de sustituir segmentos.
 
 ### CLI
 
@@ -446,6 +487,10 @@ sdi baseline [--config=path]
 - `--dry-run`: no llama red ni modifica estado.
 - `--force`: trata todas las URLs actuales como updated; la clasificación normal de eliminadas no cambia.
 - `baseline`: guarda el inventario actual sin publicar; requiere confirmación explícita y se usa en nuevas adopciones sin state legacy.
+
+### Puerta de diseño antes del runner
+
+Después de implementar configuración y antes de escribir la primera subetapa de `run.ts`, se realiza una única revisión integral del runner. Debe cerrar conjuntamente: resultado/métricas de Source, first run live, guardas de source vacío y large delete, diagnósticos, representación de `force`, orden de fallos/reporting y sintaxis de confirmaciones. No se implementan estas decisiones dentro de 5.0 ni se difieren de forma fragmentada durante 5.1–5.4.
 
 ## 13. Modelo de estado
 
@@ -580,6 +625,31 @@ Google service accounts dejan de ser una preocupación de SDI 0.1 porque el adap
 Cada run sobrescribe atómicamente `.sdi/last-run.json`; no mantiene un array histórico creciente.
 
 ```ts
+interface Diagnostic {
+  code: string;
+  message: string;
+}
+
+interface RedactedConfig {
+  siteId: string;
+  siteUrl: string;
+  source: {
+    distDir: string;
+    sitemapPath: string;
+    fallbackToHtmlScan: boolean;
+  };
+  normalization: {
+    trailingSlash: "preserve" | "always" | "never";
+  };
+  statePath: string;
+  legacyStatePath?: string;
+  reportPath: string;
+  indexNow?: {
+    keyEnv: string;
+    keyLocation?: string;
+  };
+}
+
 interface ExecutionReport {
   schemaVersion: 1;
   runId: string;
@@ -619,7 +689,15 @@ interface ExecutionReport {
 }
 ```
 
-La consola presenta el mismo resumen en formato humano. Cada error tiene código estable, por ejemplo `SDI_CONFIG_INVALID`, `SDI_STATE_CORRUPT`, `SDI_SOURCE_EMPTY`, `SDI_LARGE_DELETE`, `INDEXNOW_429`.
+`Diagnostic` no contiene severity, details, cause, stack ni timestamp: `warnings`/`errors` ya expresan severidad y el reporte no es telemetría de depuración. `code` permanece abierto para la Etapa 5, pero debe ser no vacío y cumplir el formato estable de mayúsculas/números separados por `_` (por ejemplo `SDI_CONFIG_INVALID`, `SDI_STATE_CORRUPT`, `SDI_SOURCE_EMPTY`, `SDI_LARGE_DELETE`, `INDEXNOW_429`).
+
+`RedactedConfig` es la configuración efectiva no sensible, con rutas ya resueltas. No usa un marcador `redacted: true`: la garantía proviene de una forma cerrada. El bloque `indexNow` es opcional para dry-run/baseline; `keyEnv` registra solo el nombre de la variable y `keyLocation`, si se incluye, ya debe venir redactado si contiene el valor de la key. El runner de la Etapa 5 construye esta estructura y nunca entrega valores de environment. El reporter valida la forma exacta y rechaza unknown keys; no sustituye valores ni implementa un redactor recursivo.
+
+El reporter recibe un `ExecutionReport` completo y no decide el significado del run. Valida estructura, enums, timestamps ISO y su orden, enteros no negativos, diagnósticos/config cerrados, URLs ordenadas/sin duplicados, igualdad entre `changeUrls` y sus conteos, y coincidencia entre los dos `siteId`. No interpreta reglas de negocio como presencia de IndexNow según modo, status frente a publish/state, aritmética del source o igualdad exacta entre duración y timestamps; esas decisiones pertenecen a `run.ts`.
+
+La serialización reconstruye un objeto plano en el orden del schema, conserva el orden validado de arrays, usa indentación estable y newline final. No existe canonicalizador recursivo. La persistencia usa temp + flush + rename sin `.bak`; no preelimina el reporte anterior, limpia el temp best-effort y lanza errores tipados distintos para validación y escritura. El state no se revierte si el reporte falla después del commit funcional.
+
+La consola presenta el mismo resumen en formato humano.
 
 Exit codes:
 

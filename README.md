@@ -8,7 +8,7 @@ El producto elimina la lógica copiada y divergente de varios proyectos: en luga
 
 ## Estado del proyecto
 
-El proyecto está en **Etapa 1: fundación**. La arquitectura de SDI 0.1 está congelada y todavía no existe una implementación activa del motor. El CLI solo ofrece ayuda y enumera los comandos previstos.
+Las Etapas 1–4 están completadas y la subetapa 5.0 entrega la carga y validación interna de configuración. La arquitectura de SDI 0.1 está congelada. El CLI todavía solo ofrece ayuda y enumera los comandos previstos; el runner y los comandos funcionales pertenecen a las subetapas restantes de la Etapa 5.
 
 ## Instalación
 
