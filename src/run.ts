@@ -40,12 +40,14 @@ export type RunOutcome =
 export interface DryRunOptions {
   config: ResolvedConfig;
   mode: "dry-run";
+  clearStaleLock?: boolean;
 }
 
 export interface BaselineOptions {
   config: ResolvedConfig;
   mode: "baseline";
   confirmed: boolean;
+  clearStaleLock?: boolean;
 }
 
 export interface LiveOptions {
@@ -92,7 +94,7 @@ export async function runDryRun(options: DryRunOptions, dependencies: ReadOnlyRu
 
   try {
     try {
-      lease = await (dependencies.acquireLock?.(options.config) ?? acquireDefaultLock(options.config));
+      lease = await acquireLockWithOptionalStaleCleanup(options.config, options.clearStaleLock === true, dependencies);
     } catch (error: unknown) {
       return lockFailure(error);
     }
@@ -195,7 +197,7 @@ export async function runBaseline(options: BaselineOptions, dependencies: ReadOn
 
   try {
     try {
-      lease = await (dependencies.acquireLock?.(options.config) ?? acquireDefaultLock(options.config));
+      lease = await acquireLockWithOptionalStaleCleanup(options.config, options.clearStaleLock === true, dependencies);
     } catch (error: unknown) {
       return lockFailure(error);
     }
@@ -302,7 +304,7 @@ export async function runLive(options: LiveOptions, dependencies: ReadOnlyRunDep
 
   try {
     try {
-      lease = await acquireLiveLock(options, dependencies);
+      lease = await acquireLockWithOptionalStaleCleanup(options.config, options.clearStaleLock, dependencies);
     } catch (error: unknown) {
       return lockFailure(error);
     }
@@ -424,15 +426,19 @@ function acquireDefaultLock(config: ResolvedConfig): Promise<StateLockLease> {
   return acquireStateLock({ lockPath: getStateLockPath(config.statePath), siteId: config.siteId });
 }
 
-async function acquireLiveLock(options: LiveOptions, dependencies: ReadOnlyRunDependencies): Promise<StateLockLease> {
+async function acquireLockWithOptionalStaleCleanup(
+  config: ResolvedConfig,
+  clearStaleLock: boolean,
+  dependencies: ReadOnlyRunDependencies,
+): Promise<StateLockLease> {
   try {
-    return await (dependencies.acquireLock?.(options.config) ?? acquireDefaultLock(options.config));
+    return await (dependencies.acquireLock?.(config) ?? acquireDefaultLock(config));
   } catch (error: unknown) {
-    if (!options.clearStaleLock || !(error instanceof StateLockError) || error.code !== "lock-stale" || error.inspection === undefined) {
+    if (!clearStaleLock || !(error instanceof StateLockError) || error.code !== "lock-stale" || error.inspection === undefined) {
       throw error;
     }
 
-    const lockOptions = defaultLockOptions(options.config);
+    const lockOptions = defaultLockOptions(config);
     const removed = await removeStaleLock(error.inspection, lockOptions);
 
     if (!removed) {

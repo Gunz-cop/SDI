@@ -8,7 +8,7 @@ El producto elimina la lógica copiada y divergente de varios proyectos: en luga
 
 ## Estado del proyecto
 
-Las Etapas 1–4 están completadas. Las subetapas 5.0–5.3 entregan la configuración interna y los modos dry-run, baseline y live del runner. La arquitectura de SDI 0.1 está congelada. El CLI todavía solo ofrece ayuda y enumera los comandos previstos; la interfaz funcional pertenece a la subetapa restante de la Etapa 5.
+Las Etapas 1–4 y las subetapas 5.0–5.4 están implementadas: SDI incluye configuración, runner, reportes y CLI para dry-run, baseline y live. La arquitectura de SDI 0.1 está congelada.
 
 ## Instalación
 
@@ -39,7 +39,13 @@ Tras instalar el paquete, la misma ayuda estará disponible mediante:
 npx sdi --help
 ```
 
-Los comandos `sdi run` y `sdi baseline` aparecen únicamente como comandos previstos; no están implementados en esta etapa.
+Ejecuta un dry-run, un baseline inicial confirmado o un run live después del deploy:
+
+```bash
+npx sdi run --dry-run
+npx sdi baseline --confirm
+npx sdi run
+```
 
 ## Roadmap resumido
 
