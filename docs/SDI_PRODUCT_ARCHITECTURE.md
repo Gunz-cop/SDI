@@ -271,7 +271,7 @@ Un componente futuro entra cuando aparece su trigger:
 
 SDI será un solo paquete con módulos internos y límites claros:
 
-1. **Config:** carga `sdi.config.mjs`, `.env` y flags; valida valores.
+1. **CLI/config:** el CLI carga `.env` y flags; el loader carga y valida `sdi.config.mjs` sin conocer el modo.
 2. **Astro build source:** obtiene inventario desde sitemap local o directorio HTML.
 3. **Normalize:** valida origen, elimina fragmento y aplica slash.
 4. **Fingerprint:** SHA-256 de bytes HTML.
@@ -387,6 +387,19 @@ export interface PublishResult {
 
 `Source` solo descubre URL + archivo; normalize/fingerprint convierten ese resultado en `UrlRecord`. `Source`, `StateStore` y `Destination` son seams internos para pruebas. No constituyen una API de plugins. No se crean `ExecutionContext`, `SecretProvider`, `RetryPolicy`, `Reporter`, capabilities ni resultados por destino: en 0.1 solo existe un destino y las opciones se pasan como objetos simples.
 
+El contrato `Source` permanece intacto en 0.1. El adapter concreto de Astro expone además una operación interna que realiza la misma discovery una sola vez:
+
+```ts
+interface AstroDiscoveryResult {
+  resources: DiscoveredResource[];
+  sitemapUsed: boolean;
+}
+
+discoverWithMetadata(): Promise<AstroDiscoveryResult>;
+```
+
+`discover()` delega en ella y devuelve solo `resources`. No se incluyen `duplicates` ni `rejected` en ese resultado porque no son métricas de discovery: `duplicates` se calcula después de normalize/fingerprint como `resources.length - records.length`, y `rejected` vale `0` en todo resultado exitoso porque una entrada inválida aborta el inventario completo. `ExecutionReport.source.discovered` es `resources.length`. Si discovery/composición no produce un resultado completo, el reporte fallido usa `{ sitemapUsed: false, discovered: 0, rejected: 0, duplicates: 0 }`; esas cifras significan “sin inventario completado”, no resultados parciales.
+
 La normalización, fingerprint y comparación son funciones puras, no interfaces. Se extraerán como estrategias únicamente cuando exista una segunda implementación real.
 
 ## 12. Modelo de configuración
@@ -479,18 +492,22 @@ No existen overrides generales, deep merge, perfiles, providers de secretos ni c
 ### CLI
 
 ```text
-sdi run [--dry-run] [--force] [--config=path]
-sdi baseline [--config=path]
+sdi run [--config <path>] [--dry-run] [--force] [--allow-large-delete] [--clear-stale-lock]
+sdi baseline [--config <path>] --confirm [--clear-stale-lock]
 ```
 
 - `run`: detecta y, salvo dry-run, publica cambios.
 - `--dry-run`: no llama red ni modifica estado.
-- `--force`: trata todas las URLs actuales como updated; la clasificación normal de eliminadas no cambia.
-- `baseline`: guarda el inventario actual sin publicar; requiere confirmación explícita y se usa en nuevas adopciones sin state legacy.
+- `--force`: solo es válido en live. Conserva el `ChangeSet` verdadero, pero fuerza la publicación de todas las URLs actuales; las eliminadas también se publican normalmente.
+- `--allow-large-delete`: solo es válido en live y autoriza explícitamente una caída superior al 50 %.
+- `--clear-stale-lock`: solo intenta compare-and-delete cuando la adquisición detectó un lock realmente stale; después vuelve a adquirirlo por la vía normal. Nunca elimina locks activos o inválidos.
+- `baseline`: guarda el inventario actual sin publicar; requiere `--confirm` y solo se usa en nuevas adopciones sin state actual, backup recuperable ni state legacy utilizable.
+- `--force` y `--allow-large-delete` son incompatibles con `--dry-run`; baseline no acepta ninguna de las dos. Flags desconocidos, repetidos, sin valor o incompatibles son uso inválido y salen `2` antes de efectos.
+- `--config <path>` es la única forma documentada en 0.1; se permite una sola aparición.
 
-### Puerta de diseño antes del runner
+### Puerta de diseño del runner — cerrada
 
-Después de implementar configuración y antes de escribir la primera subetapa de `run.ts`, se realiza una única revisión integral del runner. Debe cerrar conjuntamente: resultado/métricas de Source, first run live, guardas de source vacío y large delete, diagnósticos, representación de `force`, orden de fallos/reporting y sintaxis de confirmaciones. No se implementan estas decisiones dentro de 5.0 ni se difieren de forma fragmentada durante 5.1–5.4.
+La revisión integral posterior a 5.0 quedó cerrada el 13 de julio de 2026. Las reglas de Source, adopción inicial, modos, guardas, `force`, diagnósticos, reporting, locks y resultado del runner definidas en §§11–18 gobiernan 5.1–5.4. No requieren nuevos arbitrajes fragmentados salvo que la implementación demuestre una contradicción nueva.
 
 ## 13. Modelo de estado
 
@@ -524,7 +541,7 @@ Los estados actuales son mapas URL → `{url, hash, lastmod}` sin wrapper. Al ca
 4. aplicar normalización configurada y detectar colisiones;
 5. crear backup sin modificar el original;
 6. usarlo como snapshot anterior;
-7. escribir schema v1 solo después de un `baseline` confirmado o un run live exitoso.
+7. escribir schema v1 solo después de un run live exitoso. Baseline no consume ni reemplaza legacy; para una adopción desde cero se omite `legacyStatePath` y la carga debe devolver `null`.
 
 El manifiesto legacy no es necesario porque las claves del state ya forman el inventario anterior. Si state y manifiesto difieren, state prevalece y el reporte emite warning.
 
@@ -557,27 +574,32 @@ Guardas de seguridad:
 - una URL incluida en sitemap sin HTML local correspondiente aborta; 0.1 no finge estabilidad usando hash de la URL;
 - dos entradas que normalizan a la misma URL abortan si sus hashes difieren;
 - una caída superior al 50 % del inventario aborta eliminaciones salvo `--allow-large-delete`;
-- cambio de `siteId`, origin o política de slash contra un state existente aborta y exige baseline/migración explícita.
+- cambio de `siteId`, origin o política de slash contra un state existente aborta y exige una migración explícita; baseline no reemplaza states incompatibles.
+
+La guarda de eliminación masiva usa `deleted.length / previous.resources.length > 0.5`, solo cuando el snapshot anterior contiene al menos una URL. Exactamente 50 % no la activa. En live, superar el umbral aborta con `SDI_LARGE_DELETE`, salvo autorización explícita; con autorización continúa y añade `SDI_LARGE_DELETE_ALLOWED`. En dry-run nunca aborta: añade `SDI_LARGE_DELETE` como warning para que la simulación pueda inspeccionar el impacto. Baseline no reemplaza ningún snapshot existente y, por tanto, no funciona como bypass de esta guarda.
 
 ## 15. Flujo de una ejecución
 
-1. Cargar config y `.env`; validar sin mostrar secretos.
-2. Adquirir lock exclusivo del state.
-3. Cargar state schema v1 o legacy; validar/recuperar backup.
-4. Leer sitemap local con parser XML. Si no existe y está permitido, escanear HTML.
-5. Normalizar y deduplicar URLs.
-6. Resolver cada URL a HTML y calcular SHA-256.
-7. Comparar con snapshot anterior.
-8. Aplicar guardas de inventario vacío/eliminación masiva.
-9. Construir reporte preliminar.
-10. Si `--dry-run`, escribir reporte y salir sin red/state.
-11. Si `baseline`, guardar snapshot y reporte sin red.
-12. Si no hay cambios, escribir reporte; no llamar IndexNow ni reescribir state.
-13. Publicar created + updated + deleted a IndexNow en batches.
-14. Reintentar solo errores transitorios con timeout, jitter y `Retry-After`.
-15. Si algún batch falla definitivamente, conservar state anterior, reportar fallo y salir 1.
-16. Si todos son aceptados, guardar snapshot actual atómicamente.
-17. Escribir `.sdi/last-run.json`, liberar lock y devolver exit code.
+1. El CLI carga `cwd/.env` sin sobrescribir el environment existente, parsea flags y carga config sin mostrar secretos. Uso/config inválido termina aquí con exit 2 y sin reporte.
+2. El runner valida los requisitos del modo; live exige IndexNow/key y baseline exige la confirmación ya parseada.
+3. Crear `runId` después de config/modo válidos y antes de adquirir el lock.
+4. Adquirir el lock exclusivo del state. Con `--clear-stale-lock`, solo ante `lock-stale`, ejecutar compare-and-delete y volver a adquirir normalmente.
+5. Cargar state schema v1, backup recuperable o legacy y validar compatibilidad.
+6. Aplicar la guarda del modo: live sin snapshot aborta con `SDI_BASELINE_REQUIRED`; baseline solo continúa cuando `load()` devuelve `null`; dry-run admite ausencia y compara contra vacío. Cualquier snapshot corrupto o incompatible falla, nunca se interpreta como ausencia.
+7. Leer sitemap local con parser XML. Si no existe y está permitido, escanear HTML.
+8. Normalizar, resolver cada URL a HTML, calcular SHA-256 y consolidar duplicados idénticos.
+9. Rechazar un inventario final vacío con `SDI_SOURCE_EMPTY` en los tres modos.
+10. Comparar con el snapshot anterior, o contra vacío en baseline/dry-run sin snapshot.
+11. Aplicar la guarda de eliminación masiva según el modo.
+12. Si dry-run, escribir reporte y salir sin red/state. Sin snapshot añade warning `SDI_BASELINE_REQUIRED`; large delete es solo warning.
+13. Si baseline, guardar snapshot y luego escribir reporte, sin red.
+14. En live, construir la proyección de publicación. Sin `--force`, publicar created + updated + deleted; con `--force`, añadir todas las unchanged actuales sin alterar el `ChangeSet` reportado.
+15. Si no hay URLs que publicar, escribir reporte; no llamar IndexNow ni reescribir state.
+16. Publicar a IndexNow en batches y reintentar solo errores transitorios con timeout, jitter y `Retry-After`.
+17. Si algún batch falla definitivamente, conservar state anterior, escribir reporte fallido y salir 1.
+18. Si todos los batches son aceptados, guardar el snapshot actual solo cuando difiere del anterior. Un force de inventario totalmente unchanged no reescribe state.
+19. Construir y escribir `.sdi/last-run.json` atómicamente.
+20. Liberar el lock y devolver `RunOutcome`; el runner no escribe consola ni modifica estado global del proceso.
 
 Orden operativo requerido: **build → deploy exitoso → `sdi run`**. Dry-run puede ejecutarse antes del deploy; live no.
 
@@ -585,7 +607,9 @@ Orden operativo requerido: **build → deploy exitoso → `sdi run`**. Dry-run p
 
 ### Éxito
 
-Un run live es exitoso cuando discovery/fingerprint terminan, todos los cambios son aceptados por IndexNow y el nuevo state queda guardado. Un run sin cambios también es exitoso y envía cero URLs.
+Un run live es funcionalmente exitoso cuando discovery/fingerprint terminan, todas las URLs que debían publicarse son aceptadas por IndexNow y el nuevo state, cuando cambió, queda guardado. Un run sin cambios también es exitoso y envía cero URLs. Un primer live sin state actual, backup recuperable ni legacy utilizable nunca publica: exige primero `sdi baseline --confirm`.
+
+Baseline es exclusivamente adopción inicial: requiere confirmación y solo continúa cuando la carga segura de state devuelve `null`; descubre y guarda el inventario sin red. Un state, backup o legacy corrupto/incompatible aborta en vez de habilitar baseline. No reemplaza state existente ni implementa reset. Dry-run puede ejecutarse sin snapshot, no publica ni guarda; en ese caso muestra el cambio contra vacío y advierte que baseline es obligatorio antes de live.
 
 ### Retry
 
@@ -604,14 +628,14 @@ Un run live es exitoso cuando discovery/fingerprint terminan, todos los cambios 
 
 ### Concurrencia
 
-Solo se soporta un proceso por `statePath`. El lock file contiene PID, startedAt y siteId. Un lock stale puede limpiarse con confirmación/flag documentado. No hay coordinación entre máquinas; CI debe serializar por sitio.
+Solo se soporta un proceso por `statePath`. El lock file contiene PID, startedAt, siteId y hostname. La adquisición normal nunca elimina: un lock stale solo puede limpiarse mediante `--clear-stale-lock`, usando la inspección exacta y compare-and-delete ya definidos, y después se reintenta la adquisición normal. Un lock activo o inválido nunca se elimina. Si no se adquiere el lock, no se escribe `last-run.json`, porque hacerlo competiría con el propietario activo. No hay coordinación entre máquinas; CI debe serializar por sitio.
 
 ## 17. Seguridad y secretos
 
 - Único secreto de 0.1: `INDEXNOW_KEY` en environment o `.env` ignorado.
 - Estado, reporte y config efectiva no contienen la clave.
 - Se registra `keyLocation`, no el valor de la key.
-- Redactor elimina valores de campos `key`, `authorization`, `token`, `secret` de errores.
+- El runner convierte errores conocidos en mensajes seguros y nunca copia `cause`, payloads, headers ni valores de environment a `Diagnostic`; el reporter no implementa un redactor recursivo.
 - Nunca usar `NODE_TLS_REJECT_UNAUTHORIZED=0`.
 - Para CA corporativa: trust store del sistema o `NODE_EXTRA_CA_CERTS`.
 - Validar same-origin antes de abrir archivos o publicar URLs.
@@ -689,7 +713,7 @@ interface ExecutionReport {
 }
 ```
 
-`Diagnostic` no contiene severity, details, cause, stack ni timestamp: `warnings`/`errors` ya expresan severidad y el reporte no es telemetría de depuración. `code` permanece abierto para la Etapa 5, pero debe ser no vacío y cumplir el formato estable de mayúsculas/números separados por `_` (por ejemplo `SDI_CONFIG_INVALID`, `SDI_STATE_CORRUPT`, `SDI_SOURCE_EMPTY`, `SDI_LARGE_DELETE`, `INDEXNOW_429`).
+`Diagnostic` no contiene severity, details, cause, stack ni timestamp: `warnings`/`errors` ya expresan severidad y el reporte no es telemetría de depuración. `code` permanece abierto para la Etapa 5, pero debe ser no vacío y cumplir el formato estable de mayúsculas/números separados por `_` (por ejemplo `SDI_CONFIG_INVALID`, `SDI_STATE_CORRUPT`, `SDI_SOURCE_EMPTY`, `SDI_LARGE_DELETE`, `INDEXNOW_HTTP_429`).
 
 `RedactedConfig` es la configuración efectiva no sensible, con rutas ya resueltas. No usa un marcador `redacted: true`: la garantía proviene de una forma cerrada. El bloque `indexNow` es opcional para dry-run/baseline; `keyEnv` registra solo el nombre de la variable y `keyLocation`, si se incluye, ya debe venir redactado si contiene el valor de la key. El runner de la Etapa 5 construye esta estructura y nunca entrega valores de environment. El reporter valida la forma exacta y rechaza unknown keys; no sustituye valores ni implementa un redactor recursivo.
 
@@ -698,6 +722,72 @@ El reporter recibe un `ExecutionReport` completo y no decide el significado del 
 La serialización reconstruye un objeto plano en el orden del schema, conserva el orden validado de arrays, usa indentación estable y newline final. No existe canonicalizador recursivo. La persistencia usa temp + flush + rename sin `.bak`; no preelimina el reporte anterior, limpia el temp best-effort y lanza errores tipados distintos para validación y escritura. El state no se revierte si el reporte falla después del commit funcional.
 
 La consola presenta el mismo resumen en formato humano.
+
+`ExecutionReport.status` es `success` si y solo si `errors.length === 0`; los warnings nunca cambian el status. El reporte conserva el `ChangeSet` real. `--force` se registra con el warning `SDI_FORCE_ENABLED`, pero no convierte URLs creadas en updated ni altera los conteos reales: para publicar se crea una proyección interna que mantiene created/updated/deleted y convierte cada unchanged en un par sintético `{ before: record, after: record }` únicamente para el destino. Esto satisface la invariante de IndexNow sin falsificar discovery.
+
+Las métricas del reporte representan etapas completadas, no estimaciones parciales. Antes de completar discovery/composición, `source` usa los ceros neutrales definidos en §11; antes de completar compare, todos los conteos/arrays de cambios están vacíos. Una vez completada compare se conserva el `ChangeSet` real incluso si una guarda o publicación falla. `indexNow` solo aparece si el destino fue invocado y resume exclusivamente los batches intentados.
+
+El runner devuelve un valor y no escribe consola, no llama `process.exit()` ni asigna `process.exitCode`:
+
+```ts
+type NonEmptyDiagnostics = [Diagnostic, ...Diagnostic[]];
+
+type RunOutcome =
+  | {
+      kind: "success";
+      exitCode: 0;
+      report: ExecutionReport;
+      reportWritten: true;
+      terminalDiagnostics: [];
+    }
+  | ({
+      kind: "operational-failure";
+      exitCode: 1;
+    } & (
+      | {
+          report: ExecutionReport;
+          reportWritten: true;
+          terminalDiagnostics: Diagnostic[];
+        }
+      | {
+          report: ExecutionReport;
+          reportWritten: false;
+          terminalDiagnostics: NonEmptyDiagnostics;
+        }
+      | {
+          report?: never;
+          reportWritten: false;
+          terminalDiagnostics: NonEmptyDiagnostics;
+        }
+    ))
+  | {
+      kind: "usage-error";
+      exitCode: 2;
+      report?: never;
+      reportWritten: false;
+      terminalDiagnostics: NonEmptyDiagnostics;
+    };
+```
+
+`report` es el objeto construido en memoria; `reportWritten` indica si ese mismo objeto quedó persistido. Un fallo operativo sin reporte o con reporte no persistido exige al menos un diagnóstico terminal. Con reporte persistido, los errores funcionales ya pueden estar en `report.errors`, por lo que `terminalDiagnostics` puede estar vacío; un fallo posterior de release lo vuelve no vacío. El CLI presenta el reporte y esos diagnósticos, y es el único módulo que asigna el exit code. Los errores operativos esperados se convierten en resultados; las violaciones de invariantes de programación no se disimulan como fallos de red o configuración.
+
+Códigos estables mínimos de 0.1:
+
+- uso/config: `SDI_USAGE_INVALID`, `SDI_CONFIG_INVALID`;
+- adopción/modos: `SDI_BASELINE_REQUIRED`, `SDI_BASELINE_EXISTS`;
+- source/guardas: `SDI_SOURCE_FAILED`, `SDI_SOURCE_EMPTY`, `SDI_LARGE_DELETE`, `SDI_LARGE_DELETE_ALLOWED`, `SDI_FORCE_ENABLED`;
+- state: `SDI_STATE_CORRUPT`, `SDI_STATE_INCOMPATIBLE`, `SDI_STATE_WRITE_FAILED`;
+- lock: `SDI_LOCKED`, `SDI_LOCK_STALE`, `SDI_LOCK_INVALID`, `SDI_LOCK_CLEAR_FAILED`, `SDI_LOCK_RELEASE_FAILED`;
+- reporte: `SDI_REPORT_WRITE_FAILED`;
+- IndexNow: `INDEXNOW_TIMEOUT`, `INDEXNOW_NETWORK`, `INDEXNOW_ABORTED` y `INDEXNOW_HTTP_<STATUS>`.
+
+Los códigos permanecen abiertos y no forman una unión exhaustiva. `INDEXNOW_HTTP_<STATUS>` se construye solo a partir de un status HTTP entero recibido. Un error antes de config válida o un uso CLI inválido produce stderr, exit 2 y ningún reporte. Un fallo al adquirir/limpiar el lock produce exit 1 sin reporte. Después de adquirirlo, todo fallo operativo intenta producir un reporte fallido; si escribirlo falla, el reporte anterior permanece y el outcome añade `SDI_REPORT_WRITE_FAILED`.
+
+El mapeo mínimo desde errores internos es estable: `state-corrupt`, `legacy-invalid` y `legacy-collision` producen `SDI_STATE_CORRUPT`; `state-incompatible` produce `SDI_STATE_INCOMPATIBLE`; cualquier fallo de save/rollback produce `SDI_STATE_WRITE_FAILED`. Los errores tipados del adapter Astro producen `SDI_SOURCE_FAILED`, salvo el inventario exitosamente completado pero vacío, que produce `SDI_SOURCE_EMPTY`. Lock active/stale/invalid se mapea respectivamente a `SDI_LOCKED`, `SDI_LOCK_STALE` y `SDI_LOCK_INVALID`; un fallo durante compare-and-delete usa `SDI_LOCK_CLEAR_FAILED`.
+
+El reporte describe el resultado funcional hasta su propia persistencia. El lock se libera después de escribirlo para impedir que otra ejecución reemplace state/reporte durante el cierre. Si `release()` falla, no se reescribe el reporte ni se revierte state: un reporte de éxito ya persistido permanece como éxito, pero `RunOutcome` es `operational-failure`, incluye `SDI_LOCK_RELEASE_FAILED` en `terminalDiagnostics` y el CLI sale 1. La misma regla se aplica si el reporte funcional ya era fallido.
+
+`runId` usa `randomUUID()` tras config/modo válidos y antes del lock. La versión se expone desde un único módulo interno compartido por runner y CLI y se obtiene de la versión del paquete; no se mantienen constantes duplicadas. El CLI, no el runner ni el loader, carga el archivo opcional `cwd/.env` antes de `loadConfig()` y nunca sobrescribe valores ya presentes en `process.env`. La ausencia de `.env` se ignora; un archivo existente ilegible o inválido es `SDI_CONFIG_INVALID`, exit 2 y sin reporte.
 
 Exit codes:
 
@@ -723,7 +813,13 @@ Exit codes:
 - Servidor HTTP fake para IndexNow 200/202/400/403/422/429/500, timeout y `Retry-After`.
 - Fallo en segundo batch: state anterior permanece intacto.
 - Dry-run no toca state ni red.
-- Baseline toca state y no red.
+- Primer live sin snapshot falla antes de discovery/publicación y exige baseline.
+- Baseline confirmado crea state y no toca red; baseline con state/backup/legacy presente o corrupto no reemplaza nada.
+- Source vacío falla en live, dry-run y baseline con métricas neutrales y sin tocar red/state.
+- Large delete: `>50 %` falla live, el flag permite continuar, exactamente 50 % pasa y dry-run solo advierte.
+- Force publica created/updated/unchanged actuales más deleted, conserva el `ChangeSet` real y no reescribe un state totalmente unchanged.
+- Flags incompatibles/duplicados/desconocidos salen 2 sin lock ni reporte; stale-lock clear revalida y readquiere.
+- Fallo de escritura de reporte conserva state ya confirmado y reporte anterior; fallo de release conserva el reporte funcional pero devuelve exit 1.
 - Segundo run idéntico envía cero URLs.
 - Deleted se incluye en payload después del deploy.
 
@@ -760,7 +856,7 @@ Se mantiene como piloto porque:
 8. Simular 429/500 con endpoint fake antes del live.
 9. Cambiar `npm run discovery` al nuevo CLI; conservar legacy un ciclo.
 10. Migrar Cuida con slash `never` y mover live después del deploy.
-11. Migrar RuletaWeb y Vet24; usar `baseline` porque no tienen state incremental confiable.
+11. Migrar RuletaWeb y Vet24; preservar sus archivos antiguos como evidencia, omitirlos como `legacyStatePath` si no son confiables y usar `baseline --confirm` solo después de que la carga segura devuelva `null`.
 12. Retirar bypass TLS y scripts duplicados solo después de equivalencia.
 
 No se migra Google. Las credenciales Google existentes dejan de ser necesarias para SDI.

@@ -17,6 +17,11 @@ export interface ComposeDiscoveredResourcesOptions {
   trailingSlash: TrailingSlashPolicy;
 }
 
+export interface AstroDiscoveryResult {
+  resources: DiscoveredResource[];
+  sitemapUsed: boolean;
+}
+
 export type AstroBuildSourceErrorCode =
   | "sitemap-invalid"
   | "sitemap-missing"
@@ -42,6 +47,11 @@ export class AstroBuildSource implements Source {
   constructor(private readonly options: AstroBuildSourceOptions) {}
 
   async discover(): Promise<DiscoveredResource[]> {
+    return (await this.discoverWithMetadata()).resources;
+  }
+
+  /** Discovers once and records whether the local sitemap supplied the inventory. */
+  async discoverWithMetadata(): Promise<AstroDiscoveryResult> {
     let sitemap: string;
 
     try {
@@ -59,10 +69,10 @@ export class AstroBuildSource implements Source {
         );
       }
 
-      return this.discoverFromHtmlScan();
+      return { resources: await this.discoverFromHtmlScan(), sitemapUsed: false };
     }
 
-    return this.discoverFromSitemap(sitemap);
+    return { resources: await this.discoverFromSitemap(sitemap), sitemapUsed: true };
   }
 
   private async discoverFromSitemap(xml: string): Promise<DiscoveredResource[]> {

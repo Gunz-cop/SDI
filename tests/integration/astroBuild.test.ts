@@ -33,6 +33,15 @@ describe("AstroBuildSource", () => {
     }
   });
 
+  it("records whether discovery used the sitemap without changing the Source seam", async () => {
+    const sitemap = await sourceFor("astro-file", "https://file.example.test", true).discoverWithMetadata();
+    const fallback = await sourceFor("fallback-html-scan", "https://fallback.example.test", true).discoverWithMetadata();
+
+    expect(sitemap).toMatchObject({ sitemapUsed: true });
+    expect(fallback).toMatchObject({ sitemapUsed: false });
+    await expect(sourceFor("astro-file", "https://file.example.test", true).discover()).resolves.toEqual(sitemap.resources);
+  });
+
   it("returns raw bytes without decoding them", async () => {
     const fixture = sourceFixtures.find((candidate) => candidate.name === "astro-file");
 

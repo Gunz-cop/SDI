@@ -2,8 +2,9 @@
 
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+import { SDI_VERSION } from "./version.js";
 
-export const VERSION = "0.1.0";
+export const VERSION = SDI_VERSION;
 
 export const HELP_TEXT = `SDI ${VERSION}
 Search Discovery Infrastructure
