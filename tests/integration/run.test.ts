@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ResolvedConfig } from "../../src/config.js";
 import { fingerprintHtml } from "../../src/core/fingerprint.js";
+import { JsonReportWriteError } from "../../src/report/jsonReport.js";
 import { runBaseline, runDryRun } from "../../src/run.js";
+import { FileStateError } from "../../src/state/fileState.js";
 
 const directories: string[] = [];
 
@@ -194,6 +196,81 @@ describe("baseline runner", () => {
     await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("treats a valid backup as existing state and does not replace it", async () => {
+    const directory = await fixtureDirectory();
+    const config = configFor(directory);
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    const backup = stateWithThreeResources(config);
+    await writeFile(`${config.statePath}.bak`, JSON.stringify(backup, null, 2));
+
+    const outcome = await runBaseline({ config, mode: "baseline", confirmed: true });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", reportWritten: true, report: { errors: [{ code: "SDI_BASELINE_EXISTS" }] } });
+    await expect(access(config.statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(`${config.statePath}.bak`, "utf8")).resolves.toBe(JSON.stringify(backup, null, 2));
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("treats a valid legacy state as existing and does not create schema v1 state", async () => {
+    const directory = await fixtureDirectory();
+    const legacyPath = resolve(directory, "legacy-state.json");
+    const config = { ...configFor(directory), legacyStatePath: legacyPath };
+    await writeFile(legacyPath, JSON.stringify(legacyState()));
+
+    const outcome = await runBaseline({ config, mode: "baseline", confirmed: true });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", reportWritten: true, report: { errors: [{ code: "SDI_BASELINE_EXISTS" }] } });
+    await expect(access(config.statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails safely for invalid legacy state instead of treating it as absent", async () => {
+    const directory = await fixtureDirectory();
+    const legacyPath = resolve(directory, "legacy-state.json");
+    const config = { ...configFor(directory), legacyStatePath: legacyPath };
+    await writeFile(legacyPath, "not JSON");
+
+    const outcome = await runBaseline({ config, mode: "baseline", confirmed: true });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", reportWritten: true, report: { errors: [{ code: "SDI_STATE_CORRUPT" }] } });
+    await expect(access(config.statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reports a failed state save without leaving a partial state", async () => {
+    const directory = await fixtureDirectory();
+    const config = configFor(directory);
+
+    const outcome = await runBaseline({ config, mode: "baseline", confirmed: true }, {
+      createStateStore: () => ({
+        load: async () => null,
+        save: async () => { throw new FileStateError("state-save-failed", "injected save failure"); },
+      }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", reportWritten: true, report: { errors: [{ code: "SDI_STATE_WRITE_FAILED" }] } });
+    await expect(access(config.statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("preserves a successfully saved state when report persistence fails", async () => {
+    const directory = await fixtureDirectory();
+    const config = configFor(directory);
+
+    const outcome = await runBaseline({ config, mode: "baseline", confirmed: true }, {
+      writeReport: async () => { throw new JsonReportWriteError("injected report failure"); },
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "operational-failure",
+      exitCode: 1,
+      reportWritten: false,
+      terminalDiagnostics: [{ code: "SDI_REPORT_WRITE_FAILED" }],
+    });
+    await expect(readFile(config.statePath, "utf8")).resolves.toContain("https://runner.example.test/");
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("does not save an empty inventory and writes a failed baseline report", async () => {
     const directory = await fixtureDirectory({ emptyInventory: true });
     const config = configFor(directory, true);
@@ -255,6 +332,15 @@ function stateWithThreeResources(config: ResolvedConfig): object {
       "https://runner.example.test/": { url: "https://runner.example.test/", hash: fingerprintHtml(Buffer.from("<!doctype html><title>Runner</title>\n")) },
       "https://runner.example.test/removed-a/": { url: "https://runner.example.test/removed-a/", hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
       "https://runner.example.test/removed-b/": { url: "https://runner.example.test/removed-b/", hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+    },
+  };
+}
+
+function legacyState(): object {
+  return {
+    "https://runner.example.test/": {
+      url: "https://runner.example.test/",
+      hash: fingerprintHtml(Buffer.from("<!doctype html><title>Runner</title>\n")),
     },
   };
 }
