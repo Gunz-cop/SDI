@@ -69,6 +69,57 @@ describe("read-only runner", () => {
     });
   });
 
+  it("preserves sitemap metadata for a completed empty sitemap inventory", async () => {
+    const directory = await fixtureDirectory({ sitemap: emptySitemap() });
+    const config = configFor(directory);
+
+    const outcome = await runDryRun({ config, mode: "dry-run" });
+
+    expect(outcome).toMatchObject({
+      kind: "operational-failure",
+      reportWritten: true,
+      report: { source: { sitemapUsed: true, discovered: 0, rejected: 0, duplicates: 0 }, errors: [{ code: "SDI_SOURCE_EMPTY" }] },
+    });
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("writes a failed report for an Astro sitemap IO error after acquiring the lock", async () => {
+    const directory = await fixtureDirectory();
+    const config = configFor(directory);
+    await rm(config.source.sitemapPath);
+    await mkdir(config.source.sitemapPath, { recursive: true });
+
+    const outcome = await runDryRun({ config, mode: "dry-run" });
+
+    expect(outcome).toMatchObject({
+      kind: "operational-failure",
+      reportWritten: true,
+      report: { status: "failed", source: { sitemapUsed: false, discovered: 0, rejected: 0, duplicates: 0 }, errors: [{ code: "SDI_SOURCE_FAILED" }] },
+    });
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("writes a failed report when compiled HTML becomes unreadable during composition", async () => {
+    const directory = await fixtureDirectory();
+    const config = configFor(directory);
+
+    const outcome = await runDryRun({ config, mode: "dry-run" }, {
+      createSource: () => ({
+        discoverWithMetadata: async () => ({
+          sitemapUsed: true,
+          resources: [{ url: "https://runner.example.test/", filePath: resolve(directory, "vanished.html") }],
+        }),
+      }),
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "operational-failure",
+      reportWritten: true,
+      report: { status: "failed", errors: [{ code: "SDI_SOURCE_FAILED" }] },
+    });
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("does not overwrite a report when another process owns the lock", async () => {
     const directory = await fixtureDirectory();
     const config = configFor(directory);
@@ -116,6 +167,10 @@ function configFor(directory: string, fallbackToHtmlScan = false): ResolvedConfi
 
 function sitemap(): string {
   return `<?xml version="1.0"?><urlset><url><loc>https://runner.example.test/</loc></url></urlset>`;
+}
+
+function emptySitemap(): string {
+  return `<?xml version="1.0"?><urlset></urlset>`;
 }
 
 function stateWithThreeResources(config: ResolvedConfig): object {

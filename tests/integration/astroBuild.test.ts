@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -40,6 +40,43 @@ describe("AstroBuildSource", () => {
     expect(sitemap).toMatchObject({ sitemapUsed: true });
     expect(fallback).toMatchObject({ sitemapUsed: false });
     await expect(sourceFor("astro-file", "https://file.example.test", true).discover()).resolves.toEqual(sitemap.resources);
+  });
+
+  it("returns a completed empty sitemap inventory with sitemap metadata", async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), "sdi-source-empty-"));
+    const dist = resolve(directory, "dist");
+
+    try {
+      await mkdir(dist, { recursive: true });
+      await writeFile(resolve(dist, "sitemap.xml"), "<?xml version=\"1.0\"?><urlset></urlset>");
+      const result = await new AstroBuildSource({
+        siteUrl: "https://empty.example.test",
+        distDir: dist,
+        sitemapPath: resolve(dist, "sitemap.xml"),
+        fallbackToHtmlScan: false,
+      }).discoverWithMetadata();
+
+      expect(result).toEqual({ resources: [], sitemapUsed: true });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes local sitemap IO failures into source errors", async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), "sdi-source-io-"));
+    const dist = resolve(directory, "dist");
+
+    try {
+      await mkdir(resolve(dist, "sitemap.xml"), { recursive: true });
+      await expect(new AstroBuildSource({
+        siteUrl: "https://io.example.test",
+        distDir: dist,
+        sitemapPath: resolve(dist, "sitemap.xml"),
+        fallbackToHtmlScan: true,
+      }).discover()).rejects.toMatchObject({ code: "io" });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("returns raw bytes without decoding them", async () => {

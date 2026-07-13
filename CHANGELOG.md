@@ -39,6 +39,7 @@ Se debe actualizar `Unreleased` cuando un cambio aprobado modifica el comportami
 
 ### Fixed
 
+- El runner conserva la metadata real de discovery para inventarios vacíos y reporta fallos de IO del source Astro como errores operativos seguros.
 - El cargador rechaza rutas de configuración que no terminen exactamente en `.mjs` antes de intentar importarlas.
 - Se completaron los contratos internos omitidos inicialmente en la implementacion de la Etapa 2.
 

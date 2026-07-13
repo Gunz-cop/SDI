@@ -5,7 +5,7 @@ import type { ResolvedConfig } from "./config.js";
 import { toRedactedConfig } from "./config.js";
 import { JsonReportWriteError, writeJsonReport } from "./report/jsonReport.js";
 import type { Diagnostic, ExecutionReport } from "./report/types.js";
-import { AstroBuildSource, AstroBuildSourceError, composeDiscoveredResources } from "./source/astroBuild.js";
+import { AstroBuildSource, AstroBuildSourceError, composeDiscoveredResources, type AstroDiscoveryResult } from "./source/astroBuild.js";
 import { FileStateError, FileStateStore, acquireStateLock, getStateLockPath, type StateLockLease } from "./state/fileState.js";
 import { SDI_VERSION } from "./version.js";
 
@@ -44,10 +44,14 @@ interface ReadOnlyRunDependencies {
   now?: () => Date;
   runId?: () => string;
   sdiVersion?: string;
-  createSource?: (config: ResolvedConfig) => AstroBuildSource;
+  createSource?: (config: ResolvedConfig) => AstroDiscoverySource;
   createStateStore?: (config: ResolvedConfig) => Pick<StateStore, "load">;
   acquireLock?: (config: ResolvedConfig) => Promise<StateLockLease>;
   writeReport?: (report: ExecutionReport, reportPath: string) => Promise<void>;
+}
+
+interface AstroDiscoverySource {
+  discoverWithMetadata(): Promise<AstroDiscoveryResult>;
 }
 
 const EMPTY_SOURCE = { sitemapUsed: false, discovered: 0, rejected: 0, duplicates: 0 } as const;
@@ -84,15 +88,16 @@ export async function runDryRun(options: DryRunOptions, dependencies: ReadOnlyRu
         trailingSlash: options.config.normalization.trailingSlash,
       });
 
+      source = {
+        sitemapUsed: discovery.sitemapUsed,
+        discovered: discovery.resources.length,
+        rejected: 0,
+        duplicates: discovery.resources.length - records.length,
+      };
+
       if (records.length === 0) {
         errors.push(diagnostic("SDI_SOURCE_EMPTY", "The discovered inventory is empty."));
       } else {
-        source = {
-          sitemapUsed: discovery.sitemapUsed,
-          discovered: discovery.resources.length,
-          rejected: 0,
-          duplicates: discovery.resources.length - records.length,
-        };
         changes = compareRecords(state?.resources ?? {}, recordsByUrl(records));
 
         if (state === null) {

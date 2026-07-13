@@ -29,7 +29,8 @@ export type AstroBuildSourceErrorCode =
   | "ambiguous-layout"
   | "invalid-url"
   | "url-outside-origin"
-  | "normalized-url-collision";
+  | "normalized-url-collision"
+  | "io";
 
 export class AstroBuildSourceError extends Error {
   constructor(
@@ -58,7 +59,7 @@ export class AstroBuildSource implements Source {
       sitemap = await readFile(this.options.sitemapPath, "utf8");
     } catch (error: unknown) {
       if (!isMissingFile(error)) {
-        throw error;
+        throw new AstroBuildSourceError("io", "Could not read the local sitemap.", { cause: error });
       }
 
       if (!this.options.fallbackToHtmlScan) {
@@ -104,7 +105,11 @@ export class AstroBuildSource implements Source {
 
 /** Reads the compiled HTML exactly as bytes; it intentionally does not decode the file. */
 export async function readDiscoveredHtml(resource: DiscoveredResource): Promise<Uint8Array> {
-  return readFile(resource.filePath);
+  try {
+    return await readFile(resource.filePath);
+  } catch (error: unknown) {
+    throw new AstroBuildSourceError("io", "Could not read compiled HTML.", { cause: error });
+  }
 }
 
 /**
@@ -179,8 +184,24 @@ function parseSitemap(xml: string): SitemapEntry[] {
     isArray: (name) => name === "url",
   }).parse(xml);
 
-  if (!isRecord(parsed) || !isRecord(parsed.urlset) || !Array.isArray(parsed.urlset.url)) {
+  if (!isRecord(parsed)) {
     throw new AstroBuildSourceError("sitemap-invalid", "Sitemap must contain a urlset with URL entries.");
+  }
+
+  if (parsed.urlset === "") {
+    return [];
+  }
+
+  if (!isRecord(parsed.urlset)) {
+    throw new AstroBuildSourceError("sitemap-invalid", "Sitemap must contain a urlset with URL entries.");
+  }
+
+  if (parsed.urlset.url === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(parsed.urlset.url)) {
+    throw new AstroBuildSourceError("sitemap-invalid", "Sitemap must contain URL entries as an array.");
   }
 
   return parsed.urlset.url.map((entry) => {
@@ -229,7 +250,13 @@ async function resolveHtmlFile(urlValue: string, distDir: string): Promise<strin
     return existing[0];
   }
 
-  const physicalPaths = await Promise.all(existing.map((candidate) => realpath(candidate)));
+  let physicalPaths: string[];
+
+  try {
+    physicalPaths = await Promise.all(existing.map((candidate) => realpath(candidate)));
+  } catch (error: unknown) {
+    throw new AstroBuildSourceError("io", "Could not resolve compiled HTML paths.", { cause: error });
+  }
 
   if (new Set(physicalPaths).size > 1) {
     throw new AstroBuildSourceError("ambiguous-layout", `Both Astro HTML layouts exist for ${urlValue}.`);
@@ -271,7 +298,13 @@ function resolveWithinDist(distDir: string, ...parts: string[]): string {
 }
 
 async function scanHtmlFiles(directory: string): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true });
+  let entries;
+
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error: unknown) {
+    throw new AstroBuildSourceError("io", "Could not scan the static build directory.", { cause: error });
+  }
   entries.sort((left, right) => left.name.localeCompare(right.name));
   const files: string[] = [];
 
@@ -331,6 +364,6 @@ async function isRegularFile(filePath: string): Promise<boolean> {
       return false;
     }
 
-    throw error;
+    throw new AstroBuildSourceError("io", "Could not inspect a compiled HTML path.", { cause: error });
   }
 }
