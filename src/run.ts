@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { compareRecords } from "./core/compare.js";
+import { FINGERPRINT_PROFILE } from "./core/fingerprint.js";
 import type { ChangeSet, DiscoveryState, StateStore, UrlRecord } from "./core/types.js";
 import type { ResolvedConfig } from "./config.js";
 import { toRedactedConfig } from "./config.js";
@@ -40,12 +41,18 @@ export interface DryRunOptions {
   mode: "dry-run";
 }
 
+export interface BaselineOptions {
+  config: ResolvedConfig;
+  mode: "baseline";
+  confirmed: boolean;
+}
+
 interface ReadOnlyRunDependencies {
   now?: () => Date;
   runId?: () => string;
   sdiVersion?: string;
   createSource?: (config: ResolvedConfig) => AstroDiscoverySource;
-  createStateStore?: (config: ResolvedConfig) => Pick<StateStore, "load">;
+  createStateStore?: (config: ResolvedConfig) => StateStore;
   acquireLock?: (config: ResolvedConfig) => Promise<StateLockLease>;
   writeReport?: (report: ExecutionReport, reportPath: string) => Promise<void>;
 }
@@ -114,6 +121,7 @@ export async function runDryRun(options: DryRunOptions, dependencies: ReadOnlyRu
 
     report = buildReport({
       config: options.config,
+      mode: options.mode,
       runId,
       version,
       startedAt,
@@ -148,27 +156,116 @@ export async function runDryRun(options: DryRunOptions, dependencies: ReadOnlyRu
     throw new Error("Dry-run completed without a report.");
   }
 
-  if (report.status === "success" && reportWritten && terminalDiagnostics.length === 0) {
-    return { kind: "success", exitCode: 0, report, reportWritten: true, terminalDiagnostics: [] };
-  }
+  return outcomeFor(report, reportWritten, terminalDiagnostics);
+}
 
-  if (reportWritten) {
+/** Saves an initial inventory only when no safe current or legacy state exists. */
+export async function runBaseline(options: BaselineOptions, dependencies: ReadOnlyRunDependencies = {}): Promise<RunOutcome> {
+  if (!options.confirmed) {
     return {
-      kind: "operational-failure",
-      exitCode: 1,
-      report,
-      reportWritten: true,
-      terminalDiagnostics,
+      kind: "usage-error",
+      exitCode: 2,
+      reportWritten: false,
+      terminalDiagnostics: [diagnostic("SDI_USAGE_INVALID", "Baseline requires explicit confirmation.")],
     };
   }
 
-  return {
-    kind: "operational-failure",
-    exitCode: 1,
-    report,
-    reportWritten: false,
-    terminalDiagnostics: terminalDiagnostics as NonEmptyDiagnostics,
-  };
+  const now = dependencies.now ?? (() => new Date());
+  const startedAt = now();
+  const runId = (dependencies.runId ?? randomUUID)();
+  const version = dependencies.sdiVersion ?? SDI_VERSION;
+  const warnings: Diagnostic[] = [];
+  const errors: Diagnostic[] = [];
+  let source: ExecutionReport["source"] = { ...EMPTY_SOURCE };
+  let changes: ChangeSet | undefined;
+  let lease: StateLockLease | undefined;
+  let report: ExecutionReport | undefined;
+  let reportWritten = false;
+  const terminalDiagnostics: Diagnostic[] = [];
+
+  try {
+    try {
+      lease = await (dependencies.acquireLock?.(options.config) ?? acquireDefaultLock(options.config));
+    } catch (error: unknown) {
+      return lockFailure(error);
+    }
+
+    try {
+      const stateStore = dependencies.createStateStore?.(options.config) ?? createDefaultStateStore(options.config);
+      const state = await stateStore.load();
+
+      if (state !== null) {
+        errors.push(diagnostic("SDI_BASELINE_EXISTS", "Baseline cannot replace an existing state."));
+      } else {
+        const discovery = await (dependencies.createSource?.(options.config) ?? createDefaultSource(options.config)).discoverWithMetadata();
+        const records = await composeDiscoveredResources(discovery.resources, {
+          siteUrl: options.config.siteUrl,
+          trailingSlash: options.config.normalization.trailingSlash,
+        });
+        source = {
+          sitemapUsed: discovery.sitemapUsed,
+          discovered: discovery.resources.length,
+          rejected: 0,
+          duplicates: discovery.resources.length - records.length,
+        };
+
+        if (records.length === 0) {
+          errors.push(diagnostic("SDI_SOURCE_EMPTY", "The discovered inventory is empty."));
+        } else {
+          changes = compareRecords({}, recordsByUrl(records));
+          await stateStore.save({
+            schemaVersion: 1,
+            siteId: options.config.siteId,
+            siteUrl: options.config.siteUrl,
+            trailingSlash: options.config.normalization.trailingSlash,
+            fingerprintProfile: FINGERPRINT_PROFILE,
+            updatedAt: now().toISOString(),
+            resources: recordsByUrl(records),
+          });
+        }
+      }
+    } catch (error: unknown) {
+      errors.push(diagnosticForWorkError(error));
+    }
+
+    report = buildReport({
+      config: options.config,
+      mode: options.mode,
+      runId,
+      version,
+      startedAt,
+      finishedAt: now(),
+      source,
+      changes,
+      warnings,
+      errors,
+    });
+
+    try {
+      await (dependencies.writeReport?.(report, options.config.reportPath) ?? writeJsonReport(report, { reportPath: options.config.reportPath }));
+      reportWritten = true;
+    } catch (error: unknown) {
+      if (!(error instanceof JsonReportWriteError)) {
+        throw error;
+      }
+
+      terminalDiagnostics.push(diagnostic("SDI_REPORT_WRITE_FAILED", "The JSON report could not be written."));
+    }
+  } finally {
+    if (lease !== undefined) {
+      try {
+        await lease.release();
+      } catch {
+        terminalDiagnostics.push(diagnostic("SDI_LOCK_RELEASE_FAILED", "The execution lock could not be released."));
+      }
+    }
+  }
+
+  if (report === undefined) {
+    throw new Error("Baseline completed without a report.");
+  }
+
+  return outcomeFor(report, reportWritten, terminalDiagnostics);
 }
 
 function createDefaultSource(config: ResolvedConfig): AstroBuildSource {
@@ -209,6 +306,7 @@ function isLargeDelete(changes: ChangeSet, state: DiscoveryState | null): boolea
 
 function buildReport(input: {
   config: ResolvedConfig;
+  mode: ExecutionReport["mode"];
   runId: string;
   version: string;
   startedAt: Date;
@@ -227,7 +325,7 @@ function buildReport(input: {
     runId: input.runId,
     sdiVersion: input.version,
     siteId: input.config.siteId,
-    mode: "dry-run",
+    mode: input.mode,
     status: input.errors.length === 0 ? "success" : "failed",
     startedAt: input.startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
@@ -262,6 +360,10 @@ function diagnosticForWorkError(error: unknown): Diagnostic {
   if (error instanceof FileStateError) {
     if (error.code === "state-incompatible") {
       return diagnostic("SDI_STATE_INCOMPATIBLE", "The stored state is incompatible with the configured site.");
+    }
+
+    if (error.code === "state-save-failed" || error.code === "state-save-rollback-failed") {
+      return diagnostic("SDI_STATE_WRITE_FAILED", "The state could not be saved safely.");
     }
 
     return diagnostic("SDI_STATE_CORRUPT", "The stored state could not be loaded safely.");
@@ -300,6 +402,30 @@ function failureWithoutReport(diagnosticValue: Diagnostic): RunOutcome {
     exitCode: 1,
     reportWritten: false,
     terminalDiagnostics: [diagnosticValue],
+  };
+}
+
+function outcomeFor(report: ExecutionReport, reportWritten: boolean, terminalDiagnostics: Diagnostic[]): RunOutcome {
+  if (report.status === "success" && reportWritten && terminalDiagnostics.length === 0) {
+    return { kind: "success", exitCode: 0, report, reportWritten: true, terminalDiagnostics: [] };
+  }
+
+  if (reportWritten) {
+    return {
+      kind: "operational-failure",
+      exitCode: 1,
+      report,
+      reportWritten: true,
+      terminalDiagnostics,
+    };
+  }
+
+  return {
+    kind: "operational-failure",
+    exitCode: 1,
+    report,
+    reportWritten: false,
+    terminalDiagnostics: terminalDiagnostics as NonEmptyDiagnostics,
   };
 }
 

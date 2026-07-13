@@ -13,6 +13,7 @@ Se debe actualizar `Unreleased` cuando un cambio aprobado modifica el comportami
 - Cargador interno de `sdi.config.mjs` con validación estricta, defaults documentados, rutas resueltas y compatibilidad limitada con overrides legacy.
 - Contrato interno `ResolvedConfig`, error `SdiConfigError` y conversión explícita a `RedactedConfig` que no expone la clave de IndexNow.
 - Runner read-only para `dry-run`: lock, state, discovery Astro con metadata, fingerprint, comparación y reporte JSON sin publicar ni guardar state.
+- Runner de `baseline` confirmado para guardar el inventario inicial sin red y sin reemplazar un state existente.
 - Contrato `RunOutcome` para separar el resultado funcional del runner de la futura consola y los exit codes del CLI.
 - Cliente interno de IndexNow que publica URLs creadas, actualizadas y eliminadas en batches de hasta 1.000 URLs.
 - Pruebas del payload JSON de IndexNow, batches y fail-fast HTTP.

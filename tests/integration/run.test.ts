@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ResolvedConfig } from "../../src/config.js";
 import { fingerprintHtml } from "../../src/core/fingerprint.js";
-import { runDryRun } from "../../src/run.js";
+import { runBaseline, runDryRun } from "../../src/run.js";
 
 const directories: string[] = [];
 
@@ -137,6 +137,76 @@ describe("read-only runner", () => {
       terminalDiagnostics: [{ code: "SDI_LOCKED", message: "Another SDI execution already owns the state lock." }],
     });
     await expect(readFile(config.reportPath, "utf8")).resolves.toBe("previous report");
+  });
+});
+
+describe("baseline runner", () => {
+  it("saves an initial inventory and report without invoking a destination", async () => {
+    const directory = await fixtureDirectory();
+    const config = configFor(directory);
+
+    const outcome = await runBaseline({ config, mode: "baseline", confirmed: true });
+
+    expect(outcome).toMatchObject({
+      kind: "success",
+      exitCode: 0,
+      reportWritten: true,
+      report: { mode: "baseline", status: "success", changes: { created: 1, updated: 0, unchanged: 0, deleted: 0 } },
+    });
+    const state = JSON.parse(await readFile(config.statePath, "utf8")) as { resources: Record<string, unknown> };
+    expect(Object.keys(state.resources)).toEqual(["https://runner.example.test/"]);
+    await expect(readFile(config.reportPath, "utf8")).resolves.not.toContain("indexNow");
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("requires explicit confirmation before acquiring a lock or writing a report", async () => {
+    const directory = await fixtureDirectory();
+    const config = configFor(directory);
+
+    const outcome = await runBaseline({ config, mode: "baseline", confirmed: false });
+
+    expect(outcome).toEqual({
+      kind: "usage-error",
+      exitCode: 2,
+      reportWritten: false,
+      terminalDiagnostics: [{ code: "SDI_USAGE_INVALID", message: "Baseline requires explicit confirmation." }],
+    });
+    await expect(access(config.reportPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("refuses to replace an existing state and reports the operational failure", async () => {
+    const directory = await fixtureDirectory();
+    const config = configFor(directory);
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    const state = stateWithThreeResources(config);
+    await writeFile(config.statePath, JSON.stringify(state, null, 2));
+
+    const outcome = await runBaseline({ config, mode: "baseline", confirmed: true });
+
+    expect(outcome).toMatchObject({
+      kind: "operational-failure",
+      exitCode: 1,
+      reportWritten: true,
+      report: { mode: "baseline", status: "failed", errors: [{ code: "SDI_BASELINE_EXISTS" }] },
+    });
+    await expect(readFile(config.statePath, "utf8")).resolves.toBe(JSON.stringify(state, null, 2));
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not save an empty inventory and writes a failed baseline report", async () => {
+    const directory = await fixtureDirectory({ emptyInventory: true });
+    const config = configFor(directory, true);
+
+    const outcome = await runBaseline({ config, mode: "baseline", confirmed: true });
+
+    expect(outcome).toMatchObject({
+      kind: "operational-failure",
+      reportWritten: true,
+      report: { mode: "baseline", status: "failed", source: { sitemapUsed: false, discovered: 0 }, errors: [{ code: "SDI_SOURCE_EMPTY" }] },
+    });
+    await expect(access(config.statePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 
