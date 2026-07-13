@@ -7,7 +7,7 @@ import type { ResolvedConfig } from "../../src/config.js";
 import { fingerprintHtml } from "../../src/core/fingerprint.js";
 import { JsonReportWriteError } from "../../src/report/jsonReport.js";
 import { runBaseline, runDryRun, runLive } from "../../src/run.js";
-import { FileStateError } from "../../src/state/fileState.js";
+import { FileStateError, StateLockError } from "../../src/state/fileState.js";
 
 const directories: string[] = [];
 
@@ -288,6 +288,22 @@ describe("baseline runner", () => {
 });
 
 describe("live runner", () => {
+  it("rejects a live run without an IndexNow key before lock, discovery, or reporting", async () => {
+    const directory = await fixtureDirectory();
+    const config = configFor(directory);
+
+    const outcome = await runLive(liveOptions(config));
+
+    expect(outcome).toEqual({
+      kind: "usage-error",
+      exitCode: 2,
+      reportWritten: false,
+      terminalDiagnostics: [{ code: "SDI_CONFIG_INVALID", message: "Live runs require a configured IndexNow key." }],
+    });
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(config.reportPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("requires a baseline before discovery or publication", async () => {
     const directory = await fixtureDirectory();
     const config = liveConfig(configFor(directory));
@@ -350,6 +366,164 @@ describe("live runner", () => {
     expect(outcome).toMatchObject({ kind: "operational-failure", report: { errors: [{ code: "SDI_LARGE_DELETE" }] } });
     expect(published).toBe(false);
     await expect(readFile(config.statePath, "utf8")).resolves.toBe(before);
+  });
+
+  it("allows exactly 50 percent deletion", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    await writeFile(config.statePath, JSON.stringify(stateWithTwoResources(config), null, 2));
+    let published = false;
+
+    const outcome = await runLive(liveOptions(config), {
+      createDestination: () => ({ publish: async () => { published = true; return acceptedResult(1); } }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "success", report: { changes: { deleted: 1 }, warnings: [] } });
+    expect(published).toBe(true);
+  });
+
+  it("publishes and saves an explicitly allowed large deletion", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    await writeFile(config.statePath, JSON.stringify(stateWithThreeResources(config), null, 2));
+
+    const outcome = await runLive({ ...liveOptions(config), allowLargeDelete: true }, {
+      createDestination: () => ({ publish: async () => acceptedResult(2) }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "success", report: { changes: { deleted: 2 }, indexNow: { accepted: true }, warnings: [{ code: "SDI_LARGE_DELETE_ALLOWED" }] } });
+    const state = JSON.parse(await readFile(config.statePath, "utf8")) as { resources: Record<string, unknown> };
+    expect(Object.keys(state.resources)).toEqual(["https://runner.example.test/"]);
+  });
+
+  it.each(["timeout", "network", "aborted"] as const)("keeps state intact after IndexNow %s failure", async (failure) => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    const before = JSON.stringify(stateWithCurrentOnly(config, "a".repeat(64)), null, 2);
+    await writeFile(config.statePath, before);
+
+    const outcome = await runLive(liveOptions(config), {
+      createDestination: () => ({ publish: async () => ({ accepted: false, submittedUrls: 1, batches: [{ size: 1, attempts: 3, status: null, failure }] }) }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", report: { errors: [{ code: `INDEXNOW_${failure.toUpperCase()}` }], indexNow: { accepted: false } } });
+    await expect(readFile(config.statePath, "utf8")).resolves.toBe(before);
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reports a failed state save after IndexNow accepted publication", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    const before = JSON.stringify(stateWithCurrentOnly(config, "a".repeat(64)), null, 2);
+    await writeFile(config.statePath, before);
+    const existingState = JSON.parse(before);
+
+    const outcome = await runLive(liveOptions(config), {
+      createStateStore: () => ({
+        load: async () => existingState,
+        save: async () => { throw new FileStateError("state-save-failed", "injected save failure"); },
+      }),
+      createDestination: () => ({ publish: async () => acceptedResult(1) }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", report: { indexNow: { accepted: true }, errors: [{ code: "SDI_STATE_WRITE_FAILED" }] } });
+    await expect(readFile(config.statePath, "utf8")).resolves.toBe(before);
+  });
+
+  it("keeps saved state when a successful live report cannot be persisted", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    await writeFile(config.statePath, JSON.stringify(stateWithCurrentOnly(config, "a".repeat(64)), null, 2));
+
+    const outcome = await runLive(liveOptions(config), {
+      createDestination: () => ({ publish: async () => acceptedResult(1) }),
+      writeReport: async () => { throw new JsonReportWriteError("injected report failure"); },
+    });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", exitCode: 1, reportWritten: false, terminalDiagnostics: [{ code: "SDI_REPORT_WRITE_FAILED" }] });
+    await expect(readFile(config.statePath, "utf8")).resolves.toContain(fingerprintHtml(Buffer.from("<!doctype html><title>Runner</title>\n")));
+    await expect(access(resolve(directory, ".sdi/run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("preserves a successful report and saved state when lock release fails", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    await writeFile(config.statePath, JSON.stringify(stateWithCurrentOnly(config, "a".repeat(64)), null, 2));
+
+    const outcome = await runLive(liveOptions(config), {
+      createDestination: () => ({ publish: async () => acceptedResult(1) }),
+      acquireLock: async () => ({ inspection: fakeLockInspection(config), release: async () => { throw new Error("injected release failure"); } }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", exitCode: 1, reportWritten: true, report: { status: "success" }, terminalDiagnostics: [{ code: "SDI_LOCK_RELEASE_FAILED" }] });
+    await expect(readFile(config.reportPath, "utf8")).resolves.toContain('"status": "success"');
+    await expect(readFile(config.statePath, "utf8")).resolves.toContain(fingerprintHtml(Buffer.from("<!doctype html><title>Runner</title>\n")));
+  });
+
+  it("does not remove a stale lock without the explicit cleanup flag", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    const lockPath = await writeStaleLock(directory, config);
+    const contents = await readFile(lockPath, "utf8");
+
+    const outcome = await runLive(liveOptions(config));
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", reportWritten: false, terminalDiagnostics: [{ code: "SDI_LOCK_STALE" }] });
+    await expect(readFile(lockPath, "utf8")).resolves.toBe(contents);
+    await expect(access(config.reportPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("clears only a confirmed stale lock and retries normal acquisition", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    const lockPath = await writeStaleLock(directory, config);
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    await writeFile(config.statePath, JSON.stringify(stateWithCurrentOnly(config, fingerprintHtml(Buffer.from("<!doctype html><title>Runner</title>\n"))), null, 2));
+
+    const outcome = await runLive({ ...liveOptions(config), clearStaleLock: true }, {
+      createDestination: () => ({ publish: async () => acceptedResult(0) }),
+    });
+
+    expect(outcome).toMatchObject({ kind: "success" });
+    await expect(access(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reports compare-and-delete failure without removing a changed stale lock", async () => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    const lockPath = resolve(directory, ".sdi/run.lock");
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    await writeFile(lockPath, "replacement lock");
+    const inspection = { kind: "stale" as const, lockPath, contents: "stale lock", metadata: fakeLockInspection(config).metadata };
+
+    const outcome = await runLive({ ...liveOptions(config), clearStaleLock: true }, {
+      acquireLock: async () => { throw new StateLockError("lock-stale", "injected stale lock", inspection); },
+    });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", reportWritten: false, terminalDiagnostics: [{ code: "SDI_LOCK_CLEAR_FAILED" }] });
+    await expect(readFile(lockPath, "utf8")).resolves.toBe("replacement lock");
+  });
+
+  it.each(["active", "invalid"] as const)("never removes a %s lock", async (kind) => {
+    const directory = await fixtureDirectory();
+    const config = liveConfig(configFor(directory));
+    const lockPath = resolve(directory, ".sdi/run.lock");
+    await mkdir(resolve(directory, ".sdi"), { recursive: true });
+    const contents = kind === "active"
+      ? `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), siteId: config.siteId, hostname: hostname() })}\n`
+      : "invalid lock";
+    await writeFile(lockPath, contents);
+
+    const outcome = await runLive({ ...liveOptions(config), clearStaleLock: true });
+
+    expect(outcome).toMatchObject({ kind: "operational-failure", reportWritten: false, terminalDiagnostics: [{ code: kind === "active" ? "SDI_LOCKED" : "SDI_LOCK_INVALID" }] });
+    await expect(readFile(lockPath, "utf8")).resolves.toBe(contents);
   });
 
   it("force publishes unchanged URLs without falsifying the report or rewriting state", async () => {
@@ -474,5 +648,31 @@ function stateWithCurrentOnly(config: ResolvedConfig, hash: string): object {
     resources: {
       "https://runner.example.test/": { url: "https://runner.example.test/", hash },
     },
+  };
+}
+
+function stateWithTwoResources(config: ResolvedConfig): object {
+  return {
+    ...stateWithCurrentOnly(config, fingerprintHtml(Buffer.from("<!doctype html><title>Runner</title>\n"))),
+    resources: {
+      "https://runner.example.test/": { url: "https://runner.example.test/", hash: fingerprintHtml(Buffer.from("<!doctype html><title>Runner</title>\n")) },
+      "https://runner.example.test/removed/": { url: "https://runner.example.test/removed/", hash: "c".repeat(64) },
+    },
+  };
+}
+
+async function writeStaleLock(directory: string, config: ResolvedConfig): Promise<string> {
+  const lockPath = resolve(directory, ".sdi/run.lock");
+  await mkdir(resolve(directory, ".sdi"), { recursive: true });
+  await writeFile(lockPath, `${JSON.stringify({ pid: 999_999, startedAt: "2026-07-13T00:00:00.000Z", siteId: config.siteId, hostname: "remote-host" })}\n`);
+  return lockPath;
+}
+
+function fakeLockInspection(config: ResolvedConfig): { kind: "active"; lockPath: string; contents: string; metadata: { pid: number; startedAt: string; siteId: string; hostname: string } } {
+  return {
+    kind: "active",
+    lockPath: resolve(config.statePath, "..", "run.lock"),
+    contents: "lock",
+    metadata: { pid: process.pid, startedAt: "2026-07-13T00:00:00.000Z", siteId: config.siteId, hostname: hostname() },
   };
 }
