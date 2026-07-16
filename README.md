@@ -8,7 +8,7 @@ El producto elimina la lógica copiada y divergente de varios proyectos: en luga
 
 ## Estado del proyecto
 
-Las Etapas 1–4 y las subetapas 5.0–5.4 están implementadas: SDI incluye configuración, runner, reportes y CLI para dry-run, baseline y live. La arquitectura de SDI 0.1 está congelada.
+Las Etapas 1–4 y las subetapas 5.0–5.4 están implementadas: SDI incluye configuración, runner, reportes y CLI para dry-run, baseline y live. La implementación de SDI 0.1 está feature-complete y su arquitectura permanece congelada, pero el cierre formal sigue pendiente. Vet24 está suspendido como candidato de migración mientras se evalúa su arquitectura SSR/híbrida; no existe un ADR abierto para ampliar o corregir ese alcance. La planificación posterior no debe interpretarse como cierre ni publicación de 0.1.
 
 ## Instalación
 

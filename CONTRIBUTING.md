@@ -39,6 +39,7 @@ Una etapa termina cuando se cumplen todos sus entregables, límites de alcance y
 ## Política de documentación
 
 - Mantén el README orientado a usuarios y el estado real del proyecto.
+- Actualiza `CHANGELOG.md` en la seccion `Unreleased` cuando un cambio aprobado altere comportamiento, contratos, integraciones, correcciones relevantes o el estado real del producto.
 - Registra decisiones cronológicas en `DECISIONS_LOG.md`.
 - Crea un ADR solo para una modificación arquitectónica aprobada; sigue la guía en `docs/ADR/README.md`.
 - No edites la arquitectura congelada para reflejar una implementación salvo que exista un ADR aprobado que autorice el cambio.

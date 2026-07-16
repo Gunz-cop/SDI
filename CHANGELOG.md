@@ -40,6 +40,7 @@ Se debe actualizar `Unreleased` cuando un cambio aprobado modifica el comportami
 ### Changed
 
 - `PublishResult.batches` ahora usa `BatchPublishResult`, una unión discriminada que representa de forma explícita respuestas HTTP y fallos de transporte sin respuesta.
+- El estado público del proyecto aclara que SDI 0.1 está feature-complete pero no formalmente cerrado, y que Vet24 queda suspendido como candidato de migración mientras se evalúa su compatibilidad SSR/híbrida sin abrir un ADR nuevo por ahora.
 
 ### Fixed
 

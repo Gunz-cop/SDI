@@ -970,6 +970,8 @@ Seis etapas, cada una cerrada y verificable.
 - **Termina cuando:** las cuatro copias son reemplazables por el mismo paquete/config.
 - **No hacer:** SaaS, Worker, plugins o segunda generación del fingerprint.
 
+**Estado transitorio (2026-07-15):** Vet24 queda suspendido como candidato de migración para 0.1 mientras se evalúa su arquitectura SSR/híbrida como consumidor. No se abre ADR ni se modifica el contrato estático en este momento. En consecuencia, la implementación de 0.1 se considera feature-complete, pero la Etapa 6 y el cierre formal permanecen abiertos bajo el criterio anterior. Planificar 0.2 u otras prioridades no equivale a cerrar, publicar ni cambiar silenciosamente 0.1.
+
 ## 23. Backlog inicial para Terra
 
 1. Leer este documento y registrar ADR-001: SDI 0.1 es un paquete, IndexNow-only.
@@ -993,6 +995,7 @@ Antigravity puede reorganizar internamente después de cada etapa, pero no debe 
 | Persistencia durable de CI | Cuando un sitio use runner efímero real | Fuera de 0.1; documentar restore/save. |
 | Fingerprint semántico | Cuando los reportes demuestren falsos positivos frecuentes | Fuera de 0.1. |
 | Google Indexing | Solo si aparece un sitio elegible | Fuera del roadmap actual. |
+| Compatibilidad de Vet24 SSR/híbrido y cierre formal 0.1 | Antes de declarar cerrado 0.1 | Diferida por decisión del Product Owner; Vet24 está suspendido y no se abre ADR por ahora. |
 
 No quedan pendientes sobre monorepo, plugins, outbox o Cloudflare store: están explícitamente postergados.
 
@@ -1010,6 +1013,9 @@ No quedan pendientes sobre monorepo, plugins, outbox o Cloudflare store: están 
 | TLS corporativo | Fallos de fetch | System CA/`NODE_EXTRA_CA_CERTS`, nunca bypass. |
 | IndexNow 429/5xx | Run fallido | Retry acotado y state anterior intacto. |
 | Scope vuelve a crecer | Producto inconcluso | Triggers explícitos de §8 y criterios de §26. |
+| Criterio de cuatro consumidores pendiente | 0.1 no puede cerrarse formalmente | Mantener explícita la contradicción; no declarar cierre hasta una decisión arquitectónica futura. |
+
+La suspensión de Vet24 no altera la definición ni los criterios siguientes. La contradicción entre el alcance estático validado y la exigencia documental de cuatro consumidores se acepta temporalmente de forma explícita; resolverla requerirá una decisión futura del Product Owner y, si cambia la arquitectura congelada, el ADR correspondiente.
 
 ## 26. Definición de terminado y criterios de aceptación 0.1
 

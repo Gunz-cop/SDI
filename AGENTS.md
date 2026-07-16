@@ -29,7 +29,7 @@ Si durante una etapa aparece una mejora fuera de alcance, no se implementa. Se r
 
 ## Calidad
 
-Todo código nuevo debe ser modular, tipado, probado y fácil de mantener. Los agentes deben mantener la documentación coherente con los cambios aprobados y no modificar silenciosamente la arquitectura congelada.
+Todo código nuevo debe ser modular, tipado, probado y fácil de mantener. Los agentes deben mantener la documentación coherente con los cambios aprobados, actualizar `CHANGELOG.md` en `Unreleased` cuando el cambio modifique el estado real del producto y no modificar silenciosamente la arquitectura congelada.
 
 ## Identidad Git de Terra
 
